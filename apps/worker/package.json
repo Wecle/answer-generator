@@ -1,0 +1,22 @@
+{
+  "name": "@answer-generator/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@answer-generator/db": "workspace:*",
+    "@answer-generator/shared": "workspace:*",
+    "bullmq": "^5.56.4",
+    "drizzle-orm": "^0.44.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  }
+}

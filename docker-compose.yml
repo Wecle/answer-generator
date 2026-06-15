@@ -1,0 +1,64 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: answer_generator
+      POSTGRES_PASSWORD: answer_generator
+      POSTGRES_DB: answer_generator
+    ports:
+      - "5433:5432"
+    volumes:
+      - answer_generator_postgres:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    volumes:
+      - answer_generator_redis:/data
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+    ports:
+      - "8001:8001"
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      DATABASE_URL: postgres://answer_generator:answer_generator@postgres:5432/answer_generator
+      REDIS_URL: redis://redis:6379
+      AI_SERVICE_URL: http://api:8001
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres
+      - redis
+      - api
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    command: ["pnpm", "--filter", "@answer-generator/worker", "start"]
+    environment:
+      DATABASE_URL: postgres://answer_generator:answer_generator@postgres:5432/answer_generator
+      REDIS_URL: redis://redis:6379
+      AI_SERVICE_URL: http://api:8001
+      WORKER_CONCURRENCY: "1"
+    depends_on:
+      - postgres
+      - redis
+      - api
+
+volumes:
+  answer_generator_postgres:
+  answer_generator_redis:
+

@@ -1,0 +1,15 @@
+node_modules
+.next
+.turbo
+dist
+coverage
+.env
+.env.local
+.venv
+__pycache__
+.pytest_cache
+*.pyc
+*.tsbuildinfo
+uploads
+.next-dashboard-check.png
+.DS_Store

@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1781504202738,
+      "tag": "0000_neat_enchantress",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1781511700000,
+      "tag": "0001_add_cancelled_job_status",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1781511710000,
+      "tag": "0002_add_item_title",
+      "breakpoints": true
+    }
+  ]
+}
