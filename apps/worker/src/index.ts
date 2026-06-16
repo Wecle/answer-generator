@@ -227,6 +227,7 @@ const worker = new Worker<RunJobPayload>(
 
     const latestJob = await getJob(job.id);
     if (latestJob?.status !== "cancelled") {
+      await markRunningItemsNeedsReview(job.id);
       const finalItems = await db
         .select()
         .from(answerGenerationItems)
@@ -355,6 +356,13 @@ async function markRunningItemsPending(jobId: string) {
   await db
     .update(answerGenerationItems)
     .set({ status: "pending", updatedAt: new Date() })
+    .where(and(eq(answerGenerationItems.jobId, jobId), inArray(answerGenerationItems.status, ["generating", "reviewing"])));
+}
+
+async function markRunningItemsNeedsReview(jobId: string) {
+  await db
+    .update(answerGenerationItems)
+    .set({ status: "needs_review", needsManualReview: true, updatedAt: new Date() })
     .where(and(eq(answerGenerationItems.jobId, jobId), inArray(answerGenerationItems.status, ["generating", "reviewing"])));
 }
 

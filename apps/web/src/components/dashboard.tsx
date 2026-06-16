@@ -179,13 +179,6 @@ export function Dashboard() {
       const reasons = attempt.review?.reasons ?? [];
       return attempt.review && !attempt.review.passed && reasons.length > 0;
     }) ?? [];
-  const isPollingActiveJob = shouldPollJobStatus(activeJobStatus);
-  const isEditingLocked = isPollingActiveJob;
-  const canRestartJob = items.length > 0 && !isPollingActiveJob && activeJobStatus !== "completed";
-  const restartJobLabel = activeJobStatus === "draft" ? "开始任务" : activeJobStatus === "cancelled" ? "重新开始任务" : "重新审核未通过";
-  const answerSections = useMemo(() => parseAnswerSections(visibleResult?.final_answer ?? ""), [visibleResult?.final_answer]);
-  const activeJobSummary = savedJobs.find((job) => job.id === activeJobId) ?? null;
-  const elapsedLabel = formatElapsed(activeJobSummary?.startedAt, activeJobSummary?.completedAt, isPollingActiveJob);
   const jobProgress = useMemo(() => {
     const total = items.length;
     const terminalStatuses = new Set(["passed", "needs_review", "failed"]);
@@ -204,16 +197,26 @@ export function Dashboard() {
       needsReview,
       passed,
       percent,
+      processing,
       total
     };
   }, [items]);
+  const isPollingActiveJob = shouldPollJobStatus(activeJobStatus);
+  const hasActiveItemProcessing = jobProgress.processing > 0;
+  const shouldPollActiveJob = isPollingActiveJob || hasActiveItemProcessing;
+  const isEditingLocked = shouldPollActiveJob;
+  const canRestartJob = items.length > 0 && !isEditingLocked && activeJobStatus !== "completed";
+  const restartJobLabel = activeJobStatus === "draft" ? "开始任务" : activeJobStatus === "cancelled" ? "重新开始任务" : "重新审核未通过";
+  const answerSections = useMemo(() => parseAnswerSections(visibleResult?.final_answer ?? ""), [visibleResult?.final_answer]);
+  const activeJobSummary = savedJobs.find((job) => job.id === activeJobId) ?? null;
+  const elapsedLabel = formatElapsed(activeJobSummary?.startedAt, activeJobSummary?.completedAt, shouldPollActiveJob);
 
   useEffect(() => {
     void loadJobs();
   }, []);
 
   useEffect(() => {
-    if (!activeJobId || !isPollingActiveJob) {
+    if (!activeJobId || !shouldPollActiveJob) {
       return;
     }
 
@@ -223,7 +226,7 @@ export function Dashboard() {
     }, 2500);
 
     return () => window.clearInterval(timer);
-  }, [activeJobId, isPollingActiveJob]);
+  }, [activeJobId, shouldPollActiveJob]);
 
   useEffect(() => {
     if (!selected) {
@@ -732,7 +735,7 @@ export function Dashboard() {
           <div className="saved-jobs-list">
             {savedJobs.length ? (
               savedJobs.slice(0, 6).map((job) => {
-                const jobRunning = shouldPollJobStatus(job.status as GenerationJobStatus);
+                const jobRunning = shouldPollJobStatus(job.status as GenerationJobStatus) || (job.id === activeJobId && hasActiveItemProcessing);
                 return (
                   <button
                     className={job.id === activeJobId ? "saved-job active" : "saved-job"}
@@ -820,7 +823,7 @@ export function Dashboard() {
                     {restartJobLabel}
                   </button>
                 ) : null}
-                {isPollingActiveJob ? (
+                {shouldPollActiveJob ? (
                   <button className="button secondary" type="button" onClick={stopJob}>
                     <RotateCw size={16} />
                     停止
@@ -888,7 +891,7 @@ export function Dashboard() {
             <div className="panel-title">
               <h3>题目队列</h3>
               <div className="queue-title-actions">
-                <span>{isPollingActiveJob ? "自动刷新中" : `${items.length} 题`}</span>
+                <span>{shouldPollActiveJob ? "自动刷新中" : `${items.length} 题`}</span>
                 <button className="button secondary small" type="button" onClick={() => setQuestionModalOpen(true)} disabled={isEditingLocked}>
                   <Plus size={14} />
                   新增题目
