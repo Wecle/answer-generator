@@ -22,6 +22,8 @@ async def run_item(request: RunItemRequest) -> RunItemResponse:
                 material=request.material,
                 question=request.question,
                 rubric=request.rubric,
+                compiled_prompt=request.compiled_prompt,
+                rubric_schema=request.rubric_schema,
                 answer_minutes=request.answer_minutes,
                 target_words=request.target_words,
                 previous_feedback=feedback,
@@ -32,6 +34,7 @@ async def run_item(request: RunItemRequest) -> RunItemResponse:
                 material=request.material,
                 question=request.question,
                 rubric=request.rubric,
+                rubric_schema=request.rubric_schema,
                 answer=generated.answer,
                 passing_score=request.passing_score,
             )
@@ -60,4 +63,3 @@ async def run_item(request: RunItemRequest) -> RunItemResponse:
         final_score=final_score,
         reasons=reasons,
     )
-

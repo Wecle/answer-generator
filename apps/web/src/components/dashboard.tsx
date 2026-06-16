@@ -1,7 +1,9 @@
 "use client";
 
-import { BadgeCheck, Download, FileUp, Play, Plus, RotateCw, Save } from "lucide-react";
+import { BadgeCheck, Download, FileUp, Play, Plus, RotateCw, Save, Settings } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { estimateAnswerWordRange, shouldPollJobStatus, type GenerationJobStatus } from "@answer-generator/shared";
 
 interface QuestionItem {
@@ -28,10 +30,25 @@ interface ItemFormState {
   questions: string[];
 }
 
+interface TaskFormState {
+  title: string;
+  rubric: string;
+  answerMinutes: string;
+  passingScore: string;
+  maxAttempts: string;
+}
+
+type TaskFormErrors = Partial<Record<keyof TaskFormState, string>>;
+type SavingAction = "create_task" | "regenerate_all" | "future_only";
+type DocumentParseMode = "rules" | "ai";
+
 interface JobSummary {
   id: string;
   title: string;
   status: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  updatedAt?: string | null;
   progress: {
     totalItems: number;
     passedItems: number;
@@ -51,6 +68,7 @@ interface RunResponse {
     review: {
       total_score: number;
       passed: boolean;
+      reasons?: string[];
     };
   }>;
 }
@@ -65,12 +83,12 @@ const initialItems: QuestionItem[] = [
 ];
 
 const emptyTaskForm = {
-  title: "新答案生成任务",
-  rubric: "审题准确、逻辑清晰、措施可行、群众需求、闭环管理、表达自然",
-  answerMinutes: 2,
-  passingScore: 95,
-  maxAttempts: 3
-};
+  title: "",
+  rubric: "",
+  answerMinutes: "",
+  passingScore: "",
+  maxAttempts: ""
+} satisfies TaskFormState;
 
 const emptyQuestionForm = {
   title: "",
@@ -90,9 +108,16 @@ export function Dashboard() {
   const [taskForm, setTaskForm] = useState(emptyTaskForm);
   const [questionForm, setQuestionForm] = useState(emptyQuestionForm);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
+  const [editTaskModalOpen, setEditTaskModalOpen] = useState(false);
+  const [settingsApplyModalOpen, setSettingsApplyModalOpen] = useState(false);
   const [questionModalOpen, setQuestionModalOpen] = useState(false);
   const [deleteJobConfirmOpen, setDeleteJobConfirmOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [savingAction, setSavingAction] = useState<SavingAction | null>(null);
+  const [pendingDocumentFile, setPendingDocumentFile] = useState<File | null>(null);
+  const [documentParseModalOpen, setDocumentParseModalOpen] = useState(false);
+  const [parsingDocumentMode, setParsingDocumentMode] = useState<DocumentParseMode | null>(null);
+  const [documentParseError, setDocumentParseError] = useState<string | null>(null);
   const [savingItem, setSavingItem] = useState(false);
   const [loadingJobs, setLoadingJobs] = useState(false);
   const [savedJobs, setSavedJobs] = useState<JobSummary[]>([]);
@@ -100,6 +125,7 @@ export function Dashboard() {
   const [activeJobStatus, setActiveJobStatus] = useState<GenerationJobStatus>("draft");
   const [result, setResult] = useState<RunResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [taskFormErrors, setTaskFormErrors] = useState<TaskFormErrors>({});
 
   const selected = items.find((item) => item.id === selectedId) ?? null;
   const selectedForm = selected
@@ -139,7 +165,8 @@ export function Dashboard() {
           attempt_number: attempt.attemptNumber,
           review: {
             total_score: attempt.review?.totalScore ?? 0,
-            passed: attempt.review?.passed ?? false
+            passed: attempt.review?.passed ?? false,
+            reasons: attempt.review?.reasons ?? []
           }
         })) ?? [],
         reasons: latestReviewReasons(selected)
@@ -147,9 +174,18 @@ export function Dashboard() {
     : null;
   const visibleResult = selected ? result ?? persistedResult : null;
   const selectedLatestReview = selected?.attempts?.at(-1)?.review ?? null;
+  const retryFeedbackAttempts =
+    visibleResult?.attempts.filter((attempt) => {
+      const reasons = attempt.review?.reasons ?? [];
+      return attempt.review && !attempt.review.passed && reasons.length > 0;
+    }) ?? [];
   const isPollingActiveJob = shouldPollJobStatus(activeJobStatus);
+  const isEditingLocked = isPollingActiveJob;
   const canRestartJob = items.length > 0 && !isPollingActiveJob && activeJobStatus !== "completed";
   const restartJobLabel = activeJobStatus === "draft" ? "开始任务" : activeJobStatus === "cancelled" ? "重新开始任务" : "重新审核未通过";
+  const answerSections = useMemo(() => parseAnswerSections(visibleResult?.final_answer ?? ""), [visibleResult?.final_answer]);
+  const activeJobSummary = savedJobs.find((job) => job.id === activeJobId) ?? null;
+  const elapsedLabel = formatElapsed(activeJobSummary?.startedAt, activeJobSummary?.completedAt, isPollingActiveJob);
   const jobProgress = useMemo(() => {
     const total = items.length;
     const terminalStatuses = new Set(["passed", "needs_review", "failed"]);
@@ -209,12 +245,50 @@ export function Dashboard() {
     });
   }, [selected?.id, selected?.material, selected?.question]);
 
+  function openCreateTaskModal() {
+    setTaskForm(emptyTaskForm);
+    setTaskFormErrors({});
+    setError(null);
+    setTaskModalOpen(true);
+  }
+
+  function openEditTaskModal() {
+    if (isEditingLocked) {
+      setError("生成中暂不允许修改任务设置");
+      return;
+    }
+    setTaskFormErrors({});
+    setError(null);
+    setTaskForm({
+      title,
+      rubric,
+      answerMinutes: String(answerMinutes),
+      passingScore: String(passingScore),
+      maxAttempts: String(maxAttempts)
+    });
+    setEditTaskModalOpen(true);
+  }
+
+  function updateTaskFormField(field: keyof TaskFormState, value: string) {
+    setTaskForm((current) => ({ ...current, [field]: value }));
+    setTaskFormErrors((current) => {
+      if (!current[field]) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[field];
+      return next;
+    });
+  }
+
   function updateSelected(patch: Partial<QuestionItem>) {
+    if (isEditingLocked) return;
     if (!selected) return;
     setItems((current) => current.map((item) => (item.id === selected.id ? { ...item, ...patch } : item)));
   }
 
   function updateSelectedMaterials(materials: string[]) {
+    if (isEditingLocked) return;
     if (!selected) return;
     setItemForms((current) => ({
       ...current,
@@ -227,6 +301,7 @@ export function Dashboard() {
   }
 
   function updateSelectedQuestions(questions: string[]) {
+    if (isEditingLocked) return;
     if (!selected) return;
     setItemForms((current) => ({
       ...current,
@@ -239,13 +314,17 @@ export function Dashboard() {
   }
 
   async function createJob() {
-    setSaving(true);
     setError(null);
+    const { input, errors } = validateTaskForm(taskForm);
+    setTaskFormErrors(errors);
+    if (!input) return;
+    setSaving(true);
+    setSavingAction("create_task");
     try {
       const response = await fetch("/api/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...taskForm, items: [] })
+        body: JSON.stringify({ ...input, items: [] })
       });
       if (!response.ok) {
         throw new Error(await response.text());
@@ -253,11 +332,11 @@ export function Dashboard() {
       const payload = (await response.json()) as { jobId: string };
       setActiveJobId(payload.jobId);
       setActiveJobStatus("draft");
-      setTitle(taskForm.title);
-      setRubric(taskForm.rubric);
-      setAnswerMinutes(taskForm.answerMinutes);
-      setPassingScore(taskForm.passingScore);
-      setMaxAttempts(taskForm.maxAttempts);
+      setTitle(input.title);
+      setRubric(input.rubric);
+      setAnswerMinutes(input.answerMinutes);
+      setPassingScore(input.passingScore);
+      setMaxAttempts(input.maxAttempts);
       setItems([]);
       setSelectedId("");
       setItemForms({});
@@ -268,26 +347,98 @@ export function Dashboard() {
       setError(err instanceof Error ? err.message : "保存失败");
     } finally {
       setSaving(false);
+      setSavingAction(null);
     }
   }
 
-  async function parseDocument(file: File | null) {
+  function requestUpdateJobSettings() {
+    if (isEditingLocked) {
+      setError("生成中暂不允许修改任务设置");
+      return;
+    }
+    setError(null);
+    const { input, errors } = validateTaskForm(taskForm);
+    setTaskFormErrors(errors);
+    if (!input) return;
+    setEditTaskModalOpen(false);
+    setSettingsApplyModalOpen(true);
+  }
+
+  async function updateJobSettings(applyMode: "regenerate_all" | "future_only") {
+    if (!activeJobId) return;
+    if (isEditingLocked) {
+      setError("生成中暂不允许修改任务设置");
+      return;
+    }
+    setError(null);
+    const { input, errors } = validateTaskForm(taskForm);
+    setTaskFormErrors(errors);
+    if (!input) return;
+    setSaving(true);
+    setSavingAction(applyMode);
+    try {
+      const response = await fetch(`/api/jobs/${activeJobId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...input, applyMode })
+      });
+
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+
+      setTitle(input.title);
+      setRubric(input.rubric);
+      setAnswerMinutes(input.answerMinutes);
+      setPassingScore(input.passingScore);
+      setMaxAttempts(input.maxAttempts);
+      setResult(null);
+      setSettingsApplyModalOpen(false);
+      await loadJobs();
+      await loadJobDetail(activeJobId, { preserveSelection: applyMode === "future_only" });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "修改任务设置失败");
+    } finally {
+      setSaving(false);
+      setSavingAction(null);
+    }
+  }
+
+  function handleDocumentFile(file: File | null) {
     if (!file) return;
     if (!activeJobId) {
       setError("请先新增任务");
       return;
     }
+    if (isEditingLocked) {
+      setError("生成中暂不允许新增或修改题目");
+      return;
+    }
     setError(null);
+    setDocumentParseError(null);
+    setPendingDocumentFile(file);
+    setDocumentParseModalOpen(true);
+  }
+
+  async function parseDocument(mode: DocumentParseMode) {
+    if (!pendingDocumentFile) return;
+    if (isEditingLocked) {
+      setDocumentParseError("生成中暂不允许新增或修改题目");
+      return;
+    }
     const form = new FormData();
-    form.append("file", file);
+    form.append("file", pendingDocumentFile);
+    form.append("mode", mode);
+    setParsingDocumentMode(mode);
+    setDocumentParseError(null);
     try {
       const response = await fetch("/api/documents/parse", { method: "POST", body: form });
       if (!response.ok) {
         throw new Error(await response.text());
       }
-      const payload = (await response.json()) as { questions: Array<{ material?: string | null; question: string }> };
+      const payload = (await response.json()) as { questions: Array<{ title?: string | null; material?: string | null; question: string }> };
       const parsed = payload.questions.map((question, index) => ({
-        title: `Word 题目 ${index + 1}`,
+        title: question.title?.trim() || `Word 题目 ${index + 1}`,
         material: question.material ?? "",
         question: question.question
       }));
@@ -295,14 +446,22 @@ export function Dashboard() {
         await appendItems(parsed);
         setResult(null);
       }
+      setDocumentParseModalOpen(false);
+      setPendingDocumentFile(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "解析失败");
+      setDocumentParseError(err instanceof Error ? normalizeApiError(err.message) : "解析失败");
+    } finally {
+      setParsingDocumentMode(null);
     }
   }
 
   async function appendItems(nextItems: Array<{ title: string; material: string; question: string }>, options?: { focusNewItem?: boolean }) {
     if (!activeJobId) {
       setError("请先新增任务");
+      return;
+    }
+    if (isEditingLocked) {
+      setError("生成中暂不允许新增或修改题目");
       return;
     }
 
@@ -323,6 +482,10 @@ export function Dashboard() {
   }
 
   async function addQuestionFromModal() {
+    if (isEditingLocked) {
+      setError("生成中暂不允许新增或修改题目");
+      return;
+    }
     const material = questionForm.materials.map((value, index) => formatBlock("材料", value, index)).filter(Boolean).join("\n\n");
     const question = questionForm.questions.map((value, index) => formatBlock("问题", value, index)).filter(Boolean).join("\n\n");
 
@@ -380,6 +543,8 @@ export function Dashboard() {
         passingScore: number;
         maxAttempts: number;
         status: GenerationJobStatus;
+        startedAt: string | null;
+        completedAt: string | null;
       };
       items: Array<{
         id: string;
@@ -433,7 +598,7 @@ export function Dashboard() {
 
   async function runSavedJob() {
     if (!activeJobId) {
-      setTaskModalOpen(true);
+      openCreateTaskModal();
       return;
     }
 
@@ -444,6 +609,11 @@ export function Dashboard() {
       return;
     }
     const payload = (await response.json()) as { workerOnline?: boolean };
+    setEditTaskModalOpen(false);
+    setSettingsApplyModalOpen(false);
+    setQuestionModalOpen(false);
+    setDocumentParseModalOpen(false);
+    setPendingDocumentFile(null);
     setActiveJobStatus("queued");
     await loadJobs();
     await loadJobDetail(activeJobId, { preserveSelection: true });
@@ -485,6 +655,10 @@ export function Dashboard() {
 
   async function saveSelectedItem() {
     if (!activeJobId || !selected) return;
+    if (isEditingLocked) {
+      setError("生成中暂不允许修改题目");
+      return;
+    }
     if (!selected.question.trim()) {
       setError("请至少保留一个问题");
       return;
@@ -517,6 +691,10 @@ export function Dashboard() {
 
   async function deleteSelectedItem() {
     if (!activeJobId || !selected) return;
+    if (isEditingLocked) {
+      setError("生成中暂不允许删除题目");
+      return;
+    }
     setError(null);
     const response = await fetch(`/api/jobs/${activeJobId}/items/${selected.id}`, { method: "DELETE" });
     if (!response.ok) {
@@ -540,7 +718,7 @@ export function Dashboard() {
           <span className="brand-mark">AG</span>
           <span>Answer Generator</span>
         </div>
-        <button className="button new-task-button" type="button" onClick={() => setTaskModalOpen(true)}>
+        <button className="button new-task-button" type="button" onClick={openCreateTaskModal}>
           <Plus size={16} />
           新增任务
         </button>
@@ -553,22 +731,27 @@ export function Dashboard() {
           </div>
           <div className="saved-jobs-list">
             {savedJobs.length ? (
-              savedJobs.slice(0, 6).map((job) => (
-                <button
-                  className={job.id === activeJobId ? "saved-job active" : "saved-job"}
-                  key={job.id}
-                  type="button"
-                  onClick={() => loadJobDetail(job.id)}
-                >
-                  <strong>{job.title}</strong>
-                  <span>
-                    {statusLabel(job.status)} · {job.progress.progressPercent}%
-                  </span>
-                  <span className="saved-job-bar" aria-hidden="true">
-                    <i style={{ width: `${job.progress.progressPercent}%` }} />
-                  </span>
-                </button>
-              ))
+              savedJobs.slice(0, 6).map((job) => {
+                const jobRunning = shouldPollJobStatus(job.status as GenerationJobStatus);
+                return (
+                  <button
+                    className={job.id === activeJobId ? "saved-job active" : "saved-job"}
+                    key={job.id}
+                    type="button"
+                    onClick={() => loadJobDetail(job.id)}
+                  >
+                    <strong>{job.title}</strong>
+                    <span className="saved-job-status">
+                      {jobRunning ? <span className="saved-job-spinner" aria-hidden="true" /> : null}
+                      <span>{statusLabel(job.status)} · {job.progress.progressPercent}%</span>
+                    </span>
+                    <span>{formatElapsed(job.startedAt, job.completedAt, jobRunning)}</span>
+                    <span className="saved-job-bar" aria-hidden="true">
+                      <i style={{ width: `${job.progress.progressPercent}%` }} />
+                    </span>
+                  </button>
+                );
+              })
             ) : (
               <span className="empty-list">{loadingJobs ? "加载中" : "暂无保存任务"}</span>
             )}
@@ -599,17 +782,33 @@ export function Dashboard() {
                   <span>已处理 {jobProgress.completed}/{jobProgress.total}</span>
                   <span>已通过 {jobProgress.passed}</span>
                   <span>待人工 {jobProgress.needsReview}</span>
+                  <span>耗时 {elapsedLabel}</span>
                 </div>
               </div>
             ) : null}
           </div>
           <div className="top-actions">
-            <label className="button secondary">
+            {!isEditingLocked ? (
+              <button className="button secondary" type="button" onClick={openEditTaskModal}>
+                <Settings size={16} />
+                修改设置
+              </button>
+            ) : null}
+            <label className={isEditingLocked ? "button secondary disabled" : "button secondary"} aria-disabled={isEditingLocked}>
               <FileUp size={16} />
               上传 Word
-              <input hidden type="file" accept=".docx" onChange={(event) => parseDocument(event.target.files?.[0] ?? null)} />
+              <input
+                hidden
+                type="file"
+                accept=".docx"
+                disabled={isEditingLocked}
+                onChange={(event) => {
+                  handleDocumentFile(event.target.files?.[0] ?? null);
+                  event.currentTarget.value = "";
+                }}
+              />
             </label>
-            <button className="button secondary" type="button" onClick={() => setQuestionModalOpen(true)}>
+            <button className="button secondary" type="button" onClick={() => setQuestionModalOpen(true)} disabled={isEditingLocked}>
               <Plus size={16} />
               新增题目
             </button>
@@ -690,7 +889,7 @@ export function Dashboard() {
               <h3>题目队列</h3>
               <div className="queue-title-actions">
                 <span>{isPollingActiveJob ? "自动刷新中" : `${items.length} 题`}</span>
-                <button className="button secondary small" type="button" onClick={() => setQuestionModalOpen(true)}>
+                <button className="button secondary small" type="button" onClick={() => setQuestionModalOpen(true)} disabled={isEditingLocked}>
                   <Plus size={14} />
                   新增题目
                 </button>
@@ -709,7 +908,7 @@ export function Dashboard() {
                 >
                   <div className="item-head">
                     <strong>{item.title || `题目 ${index + 1}`}</strong>
-                    <span className={statusClassName(item.status)}>{item.id === selected?.id ? "编辑中" : statusLabel(item.status ?? "pending")}</span>
+                    <span className={statusClassName(item.status)}>{item.id === selected?.id ? (isEditingLocked ? "查看中" : "编辑中") : statusLabel(item.status ?? "pending")}</span>
                   </div>
                   <span className="item-copy">{item.question || "空题目"}</span>
                   <span className="item-meta">
@@ -724,28 +923,30 @@ export function Dashboard() {
           {selected ? <section className="panel active-question-panel" key={selected.id}>
             <div className="panel-title">
               <h3>当前题目</h3>
-              <span>{wordRange.minWords}-{wordRange.maxWords} 字</span>
+              <span>{isEditingLocked ? "生成中只读" : `${wordRange.minWords}-${wordRange.maxWords} 字`}</span>
             </div>
             <div className="field">
               <label htmlFor="question-title">题目名称</label>
-              <input id="question-title" value={selected.title} onChange={(event) => updateSelected({ title: event.target.value })} />
+              <input id="question-title" value={selected.title} disabled={isEditingLocked} onChange={(event) => updateSelected({ title: event.target.value })} />
             </div>
             <RepeatableFields
               label="材料"
               values={selectedForm?.materials ?? [""]}
               onChange={updateSelectedMaterials}
+              disabled={isEditingLocked}
             />
             <RepeatableFields
               label="问题"
               values={selectedForm?.questions ?? [""]}
               onChange={updateSelectedQuestions}
+              disabled={isEditingLocked}
             />
             <div className="actions item-actions">
-              <button className="button secondary" type="button" onClick={saveSelectedItem} disabled={savingItem}>
+              <button className="button secondary" type="button" onClick={saveSelectedItem} disabled={savingItem || isEditingLocked}>
                 <Save size={16} />
                 {savingItem ? "保存中" : "保存题目"}
               </button>
-              <button className="button secondary danger-action" type="button" onClick={deleteSelectedItem}>
+              <button className="button secondary danger-action" type="button" onClick={deleteSelectedItem} disabled={isEditingLocked}>
                 删除题目
               </button>
             </div>
@@ -758,7 +959,16 @@ export function Dashboard() {
             </div>
             {visibleResult ? (
               <>
-                <div className="result">{visibleResult.final_answer}</div>
+                <div className="result-sections">
+                  {answerSections.map((section, index) => (
+                    <article className="result-section" key={`${section.title}-${index}`}>
+                      <div className="result-section-head">
+                        <span>{section.title}</span>
+                      </div>
+                      <div className="result">{section.body}</div>
+                    </article>
+                  ))}
+                </div>
                 <div className="review">
                   <div className="review-box">
                     <strong>{visibleResult.final_score}</strong>
@@ -776,11 +986,24 @@ export function Dashboard() {
                     <span>审核状态</span>
                   </div>
                 </div>
-                <div className="reasons">
-                  {visibleResult.reasons.map((reason) => (
-                    <span key={reason}>{reason}</span>
-                  ))}
-                </div>
+                {retryFeedbackAttempts.length > 0 ? (
+                  <div className="retry-notes">
+                    <h4>重试意见</h4>
+                    {retryFeedbackAttempts.map((attempt) => (
+                      <div className="retry-note" key={attempt.attempt_number}>
+                        <div className="retry-note-head">
+                          <strong>第 {attempt.attempt_number} 轮</strong>
+                          <span>{attempt.review.total_score} 分</span>
+                        </div>
+                        <div className="retry-note-reasons">
+                          {attempt.review.reasons?.map((reason) => (
+                            <p key={reason}>{reason}</p>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
                 {selectedLatestReview?.dimensions.length ? (
                   <div className="dimensions">
                     {selectedLatestReview.dimensions.map((dimension) => (
@@ -799,22 +1022,9 @@ export function Dashboard() {
             )}
           </section> : null}
         </div> : (
-          <section className="panel empty-workspace">
-            <div className="panel-title">
-              <h3>添加题目</h3>
-              <span>等待题目</span>
-            </div>
-            <div className="actions">
-              <label className="button secondary">
-                <FileUp size={16} />
-                上传 Word
-                <input hidden type="file" accept=".docx" onChange={(event) => parseDocument(event.target.files?.[0] ?? null)} />
-              </label>
-              <button className="button" type="button" onClick={() => setQuestionModalOpen(true)}>
-                <Plus size={16} />
-                新增题目
-              </button>
-            </div>
+          <section className="empty-queue-state">
+            <span>题目队列为空</span>
+            <p>等待导入题目材料，生成流程会在题目加入后开始准备。</p>
           </section>
         )}
         </>
@@ -829,31 +1039,150 @@ export function Dashboard() {
             </div>
             <div className="field">
               <label htmlFor="task-title">任务名称</label>
-              <input id="task-title" value={taskForm.title} onChange={(event) => setTaskForm({ ...taskForm, title: event.target.value })} />
+              <input id="task-title" value={taskForm.title} aria-invalid={Boolean(taskFormErrors.title)} onChange={(event) => updateTaskFormField("title", event.target.value)} />
+              <FieldError message={taskFormErrors.title} />
             </div>
             <div className="field">
               <label htmlFor="task-rubric">评分标准</label>
-              <textarea id="task-rubric" value={taskForm.rubric} onChange={(event) => setTaskForm({ ...taskForm, rubric: event.target.value })} />
+              <textarea id="task-rubric" value={taskForm.rubric} aria-invalid={Boolean(taskFormErrors.rubric)} onChange={(event) => updateTaskFormField("rubric", event.target.value)} />
+              <FieldError message={taskFormErrors.rubric} />
+            </div>
+            <div className="rubric-preview">
+              <div className="rubric-preview-head">评分标准预览</div>
+              <MarkdownPreview value={taskForm.rubric} />
             </div>
             <div className="split">
               <div className="field">
                 <label htmlFor="task-minutes">答题时间</label>
-                <input id="task-minutes" type="number" min="1" step="0.5" value={taskForm.answerMinutes} onChange={(event) => setTaskForm({ ...taskForm, answerMinutes: Number(event.target.value) })} />
+                <input id="task-minutes" type="number" min="1" step="0.5" value={taskForm.answerMinutes} aria-invalid={Boolean(taskFormErrors.answerMinutes)} onChange={(event) => updateTaskFormField("answerMinutes", event.target.value)} />
+                <FieldError message={taskFormErrors.answerMinutes} />
               </div>
               <div className="field">
                 <label htmlFor="task-score">通过分数</label>
-                <input id="task-score" type="number" min="0" max="100" value={taskForm.passingScore} onChange={(event) => setTaskForm({ ...taskForm, passingScore: Number(event.target.value) })} />
+                <input id="task-score" type="number" min="0" max="100" value={taskForm.passingScore} aria-invalid={Boolean(taskFormErrors.passingScore)} onChange={(event) => updateTaskFormField("passingScore", event.target.value)} />
+                <FieldError message={taskFormErrors.passingScore} />
               </div>
             </div>
             <div className="field">
               <label htmlFor="task-attempts">重试次数</label>
-              <input id="task-attempts" type="number" min="1" max="10" value={taskForm.maxAttempts} onChange={(event) => setTaskForm({ ...taskForm, maxAttempts: Number(event.target.value) })} />
+              <input id="task-attempts" type="number" min="1" max="10" value={taskForm.maxAttempts} aria-invalid={Boolean(taskFormErrors.maxAttempts)} onChange={(event) => updateTaskFormField("maxAttempts", event.target.value)} />
+              <FieldError message={taskFormErrors.maxAttempts} />
             </div>
             <div className="actions">
               <button className="button" type="button" onClick={createJob} disabled={saving}>
-                {saving ? "创建中" : "创建任务"}
+                <LoadingLabel loading={savingAction === "create_task"} loadingText="创建中" text="创建任务" />
               </button>
               <button className="button secondary" type="button" onClick={() => setTaskModalOpen(false)}>取消</button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+      {editTaskModalOpen ? (
+        <div className="modal-backdrop">
+          <section className="modal">
+            <div className="panel-title">
+              <h3>修改任务设置</h3>
+              <button className="icon-button" type="button" onClick={() => setEditTaskModalOpen(false)}>×</button>
+            </div>
+            <div className="field">
+              <label htmlFor="edit-task-title">任务名称</label>
+              <input id="edit-task-title" value={taskForm.title} aria-invalid={Boolean(taskFormErrors.title)} onChange={(event) => updateTaskFormField("title", event.target.value)} />
+              <FieldError message={taskFormErrors.title} />
+            </div>
+            <div className="field">
+              <label htmlFor="edit-task-rubric">评分标准</label>
+              <textarea id="edit-task-rubric" value={taskForm.rubric} aria-invalid={Boolean(taskFormErrors.rubric)} onChange={(event) => updateTaskFormField("rubric", event.target.value)} />
+              <FieldError message={taskFormErrors.rubric} />
+            </div>
+            <div className="rubric-preview">
+              <div className="rubric-preview-head">评分标准预览</div>
+              <MarkdownPreview value={taskForm.rubric} />
+            </div>
+            <div className="split">
+              <div className="field">
+                <label htmlFor="edit-task-minutes">答题时间</label>
+                <input id="edit-task-minutes" type="number" min="1" step="0.5" value={taskForm.answerMinutes} aria-invalid={Boolean(taskFormErrors.answerMinutes)} onChange={(event) => updateTaskFormField("answerMinutes", event.target.value)} />
+                <FieldError message={taskFormErrors.answerMinutes} />
+              </div>
+              <div className="field">
+                <label htmlFor="edit-task-score">通过分数</label>
+                <input id="edit-task-score" type="number" min="0" max="100" value={taskForm.passingScore} aria-invalid={Boolean(taskFormErrors.passingScore)} onChange={(event) => updateTaskFormField("passingScore", event.target.value)} />
+                <FieldError message={taskFormErrors.passingScore} />
+              </div>
+            </div>
+            <div className="field">
+              <label htmlFor="edit-task-attempts">重试次数</label>
+              <input id="edit-task-attempts" type="number" min="1" max="10" value={taskForm.maxAttempts} aria-invalid={Boolean(taskFormErrors.maxAttempts)} onChange={(event) => updateTaskFormField("maxAttempts", event.target.value)} />
+              <FieldError message={taskFormErrors.maxAttempts} />
+            </div>
+            <div className="actions">
+              <button className="button" type="button" onClick={requestUpdateJobSettings}>确认修改</button>
+              <button className="button secondary" type="button" onClick={() => setEditTaskModalOpen(false)}>取消</button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+      {settingsApplyModalOpen ? (
+        <div className="modal-backdrop">
+          <section className="modal confirm-modal settings-confirm-modal">
+            <div className="panel-title">
+              <h3>应用新设置</h3>
+              <button className="icon-button" type="button" onClick={() => setSettingsApplyModalOpen(false)}>×</button>
+            </div>
+            <p className="confirm-copy">请选择新设置的应用范围。重新生成会清空所有题目的生成结果和审核记录。</p>
+            <div className="settings-confirm-actions">
+              <button className="button danger-button" type="button" onClick={() => updateJobSettings("regenerate_all")} disabled={saving}>
+                <LoadingLabel loading={savingAction === "regenerate_all"} loadingText="处理中" text="全部题目重新生成" />
+              </button>
+              <button className="button secondary" type="button" onClick={() => updateJobSettings("future_only")} disabled={saving}>
+                <LoadingLabel loading={savingAction === "future_only"} loadingText="处理中" text="仅未生成题目使用新设置" />
+              </button>
+              <button className="button secondary" type="button" onClick={() => setSettingsApplyModalOpen(false)} disabled={saving}>
+                取消
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+      {documentParseModalOpen ? (
+        <div className="modal-backdrop">
+          <section className="modal confirm-modal document-parse-modal">
+            <div className="panel-title">
+              <h3>选择解析方式</h3>
+              <button
+                className="icon-button"
+                type="button"
+                onClick={() => {
+                  if (parsingDocumentMode) return;
+                  setDocumentParseModalOpen(false);
+                  setPendingDocumentFile(null);
+                }}
+              >
+                ×
+              </button>
+            </div>
+            <p className="confirm-copy">
+              {pendingDocumentFile?.name ?? "Word 文档"} 已选择。普通解析适合格式规整的文档，AI 解析适合题目、材料和问题排版差异较大的文档。
+            </p>
+            {documentParseError ? <p className="modal-error">{documentParseError}</p> : null}
+            <div className="settings-confirm-actions">
+              <button className="button" type="button" onClick={() => parseDocument("rules")} disabled={Boolean(parsingDocumentMode)}>
+                <LoadingLabel loading={parsingDocumentMode === "rules"} loadingText="解析中" text="普通解析" />
+              </button>
+              <button className="button secondary" type="button" onClick={() => parseDocument("ai")} disabled={Boolean(parsingDocumentMode)}>
+                <LoadingLabel loading={parsingDocumentMode === "ai"} loadingText="解析中" text="AI 解析" />
+              </button>
+              <button
+                className="button secondary"
+                type="button"
+                onClick={() => {
+                  setDocumentParseModalOpen(false);
+                  setPendingDocumentFile(null);
+                }}
+                disabled={Boolean(parsingDocumentMode)}
+              >
+                取消
+              </button>
             </div>
           </section>
         </div>
@@ -867,20 +1196,22 @@ export function Dashboard() {
             </div>
             <div className="field">
               <label htmlFor="new-question-title">题目名称</label>
-              <input id="new-question-title" value={questionForm.title} onChange={(event) => setQuestionForm({ ...questionForm, title: event.target.value })} />
+              <input id="new-question-title" value={questionForm.title} disabled={isEditingLocked} onChange={(event) => setQuestionForm({ ...questionForm, title: event.target.value })} />
             </div>
             <RepeatableFields
               label="材料"
               values={questionForm.materials}
               onChange={(materials) => setQuestionForm((current) => ({ ...current, materials }))}
+              disabled={isEditingLocked}
             />
             <RepeatableFields
               label="问题"
               values={questionForm.questions}
               onChange={(questions) => setQuestionForm((current) => ({ ...current, questions }))}
+              disabled={isEditingLocked}
             />
             <div className="actions">
-              <button className="button" type="button" onClick={addQuestionFromModal}>添加题目</button>
+              <button className="button" type="button" onClick={addQuestionFromModal} disabled={isEditingLocked}>添加题目</button>
               <button className="button secondary" type="button" onClick={() => setQuestionModalOpen(false)}>取消</button>
             </div>
           </section>
@@ -938,6 +1269,100 @@ function parseBlocks(label: string, value: string) {
   return blocks.length > 0 ? blocks : [trimmed];
 }
 
+function parseAnswerSections(answer: string) {
+  const trimmed = answer.trim();
+  if (!trimmed) {
+    return [{ title: "参考答案", body: "" }];
+  }
+
+  const headerPattern = /^第\s*\d+\s*题\s*$/gm;
+  const matches = [...trimmed.matchAll(headerPattern)];
+  if (matches.length === 0) {
+    return [{ title: "参考答案", body: stripAnswerLabel(trimmed) }];
+  }
+
+  return matches.map((match, index) => {
+    const start = match.index ?? 0;
+    const bodyStart = start + match[0].length;
+    const end = index + 1 < matches.length ? matches[index + 1].index ?? trimmed.length : trimmed.length;
+    return {
+      title: match[0].trim(),
+      body: stripAnswerLabel(trimmed.slice(bodyStart, end))
+    };
+  });
+}
+
+function stripAnswerLabel(value: string) {
+  return value.trim().replace(/^参考答案\s*[：:]\s*/u, "").trim();
+}
+
+function formatElapsed(startedAt?: string | null, completedAt?: string | null, running = false) {
+  if (!startedAt) {
+    return running ? "等待开始" : "未开始";
+  }
+
+  const start = new Date(startedAt).getTime();
+  const end = completedAt ? new Date(completedAt).getTime() : running ? Date.now() : start;
+  const seconds = Math.max(0, Math.round((end - start) / 1000));
+  if (seconds < 60) {
+    return `${seconds} 秒`;
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  const restSeconds = seconds % 60;
+  if (minutes < 60) {
+    return `${minutes} 分 ${restSeconds} 秒`;
+  }
+
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  return `${hours} 小时 ${restMinutes} 分`;
+}
+
+function normalizeApiError(message: string) {
+  try {
+    const payload = JSON.parse(message) as { detail?: unknown };
+    if (typeof payload.detail === "string") {
+      return payload.detail;
+    }
+  } catch {
+    return message;
+  }
+
+  return message;
+}
+
+function validateTaskForm(form: TaskFormState) {
+  const title = form.title.trim();
+  const rubric = form.rubric.trim();
+  const answerMinutes = Number(form.answerMinutes);
+  const passingScore = Number(form.passingScore);
+  const maxAttempts = Number(form.maxAttempts);
+  const errors: TaskFormErrors = {};
+
+  if (!title) errors.title = "请填写任务名称";
+  if (!rubric) errors.rubric = "请填写评分标准";
+  if (!form.answerMinutes.trim()) errors.answerMinutes = "请填写答题时间";
+  if (!form.passingScore.trim()) errors.passingScore = "请填写通过分数";
+  if (!form.maxAttempts.trim()) errors.maxAttempts = "请填写重试次数";
+
+  if (!errors.answerMinutes && (!Number.isFinite(answerMinutes) || answerMinutes <= 0)) {
+    errors.answerMinutes = "答题时间必须大于 0 分钟";
+  }
+  if (!errors.passingScore && (!Number.isInteger(passingScore) || passingScore < 0 || passingScore > 100)) {
+    errors.passingScore = "通过分数必须是 0 到 100 的整数";
+  }
+  if (!errors.maxAttempts && (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10)) {
+    errors.maxAttempts = "重试次数必须是 1 到 10 的整数";
+  }
+
+  if (Object.keys(errors).length > 0) {
+    return { input: null, errors };
+  }
+
+  return { input: { title, rubric, answerMinutes, passingScore, maxAttempts }, errors };
+}
+
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -945,17 +1370,19 @@ function escapeRegExp(value: string) {
 function RepeatableFields({
   label,
   values,
-  onChange
+  onChange,
+  disabled = false
 }: {
   label: string;
   values: string[];
   onChange: (values: string[]) => void;
+  disabled?: boolean;
 }) {
   return (
     <div className="repeatable">
       <div className="repeatable-head">
         <span>{label}</span>
-        <button className="button secondary small" type="button" onClick={() => onChange([...values, ""])}>
+        <button className="button secondary small" type="button" onClick={() => onChange([...values, ""])} disabled={disabled}>
           <Plus size={14} />
           添加{label}
         </button>
@@ -966,16 +1393,51 @@ function RepeatableFields({
           <textarea
             id={`${label}-${index}`}
             value={value}
+            disabled={disabled}
             onChange={(event) => onChange(values.map((item, itemIndex) => (itemIndex === index ? event.target.value : item)))}
           />
           {values.length > 1 ? (
-            <button className="button secondary small" type="button" onClick={() => onChange(values.filter((_, itemIndex) => itemIndex !== index))}>
+            <button className="button secondary small" type="button" onClick={() => onChange(values.filter((_, itemIndex) => itemIndex !== index))} disabled={disabled}>
               删除{label}
             </button>
           ) : null}
         </div>
       ))}
     </div>
+  );
+}
+
+function MarkdownPreview({ value }: { value: string }) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return <div className="markdown-preview markdown-empty">填写评分标准后显示预览。</div>;
+  }
+
+  return (
+    <div className="markdown-preview">
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{trimmed}</ReactMarkdown>
+    </div>
+  );
+}
+
+function FieldError({ message }: { message?: string }) {
+  if (!message) {
+    return null;
+  }
+
+  return <p className="field-error">{message}</p>;
+}
+
+function LoadingLabel({ loading, loadingText, text }: { loading: boolean; loadingText: string; text: string }) {
+  if (!loading) {
+    return text;
+  }
+
+  return (
+    <>
+      <span className="button-spinner" aria-hidden="true" />
+      <span>{loadingText}</span>
+    </>
   );
 }
 

@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 
 class ParsedQuestion(BaseModel):
+    title: Optional[str] = None
     material: Optional[str] = None
     question: str
 
@@ -12,10 +13,39 @@ class ParseDocumentResponse(BaseModel):
     questions: List[ParsedQuestion]
 
 
+class RubricDimensionSchema(BaseModel):
+    name: str
+    max_score: int
+    criteria: List[str] = Field(default_factory=list)
+    pitfalls: List[str] = Field(default_factory=list)
+
+
+class RubricSchema(BaseModel):
+    role_prompt: str
+    answer_principles: List[str] = Field(default_factory=list)
+    dimensions: List[RubricDimensionSchema] = Field(default_factory=list)
+    retry_policy: List[str] = Field(default_factory=list)
+    output_rules: List[str] = Field(default_factory=list)
+
+
+class CompileRubricRequest(BaseModel):
+    rubric: str
+    answer_minutes: float = Field(gt=0)
+    passing_score: int = Field(default=95, ge=0, le=100)
+
+
+class CompileRubricResponse(BaseModel):
+    compiled_prompt: str
+    rubric_schema: RubricSchema
+    compiler_model: str
+
+
 class GenerateAnswerRequest(BaseModel):
     material: Optional[str] = None
     question: str
     rubric: str
+    compiled_prompt: Optional[str] = None
+    rubric_schema: Optional[RubricSchema] = None
     answer_minutes: float = Field(gt=0)
     target_words: int = Field(gt=0)
     previous_feedback: List[str] = Field(default_factory=list)
@@ -31,6 +61,7 @@ class ReviewAnswerRequest(BaseModel):
     material: Optional[str] = None
     question: str
     rubric: str
+    rubric_schema: Optional[RubricSchema] = None
     answer: str
     passing_score: int = Field(default=95, ge=0, le=100)
 
@@ -53,6 +84,8 @@ class RunItemRequest(BaseModel):
     material: Optional[str] = None
     question: str
     rubric: str
+    compiled_prompt: Optional[str] = None
+    rubric_schema: Optional[RubricSchema] = None
     answer_minutes: float = Field(gt=0)
     target_words: int = Field(gt=0)
     passing_score: int = Field(default=95, ge=0, le=100)
@@ -71,4 +104,3 @@ class RunItemResponse(BaseModel):
     final_answer: str
     final_score: int
     reasons: List[str]
-

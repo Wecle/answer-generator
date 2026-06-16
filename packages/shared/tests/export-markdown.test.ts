@@ -6,6 +6,8 @@ describe("formatJobMarkdown", () => {
     const markdown = formatJobMarkdown({
       title: "6 月面试答案生成任务",
       rubric: "审题准确、逻辑清晰",
+      startedAt: new Date("2026-06-16T10:00:00Z"),
+      completedAt: new Date("2026-06-16T10:01:05Z"),
       items: [
         {
           index: 1,
@@ -20,6 +22,8 @@ describe("formatJobMarkdown", () => {
 
     expect(markdown).toContain("# 6 月面试答案生成任务");
     expect(markdown).toContain("## 评分标准");
+    expect(markdown).toContain("## 任务统计");
+    expect(markdown).toContain("耗时：1 分 5 秒");
     expect(markdown).toContain("审题准确、逻辑清晰");
     expect(markdown).toContain("## 题目 1");
     expect(markdown).toContain("状态：通过");
@@ -49,5 +53,25 @@ describe("formatJobMarkdown", () => {
     expect(markdown).toContain("材料：无");
     expect(markdown).toContain("分数：未评分");
     expect(markdown).toContain("暂无答案");
+  });
+
+  it("does not export task configuration json as an answer", () => {
+    const markdown = formatJobMarkdown({
+      title: "异常结果任务",
+      rubric: "评分标准",
+      items: [
+        {
+          index: 1,
+          material: null,
+          question: "题目",
+          status: "needs_review",
+          finalScore: 0,
+          finalAnswer: JSON.stringify({ answer_principles: ["不要导出"], dimensions: [{ name: "审题" }] })
+        }
+      ]
+    });
+
+    expect(markdown).not.toContain("answer_principles");
+    expect(markdown).toContain("答案内容异常");
   });
 });

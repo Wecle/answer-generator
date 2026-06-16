@@ -8,9 +8,15 @@ export async function POST(_: Request, context: { params: Promise<{ id: string }
   const db = createDb();
   const reset = await resetJobResults(db, id);
   const nextStatus = reset.resetItems > 0 ? "queued" : "completed";
+  const now = new Date();
   const [job] = await db
     .update(answerGenerationJobs)
-    .set({ status: nextStatus, updatedAt: new Date() })
+    .set({
+      status: nextStatus,
+      startedAt: now,
+      completedAt: reset.resetItems > 0 ? null : now,
+      updatedAt: now
+    })
     .where(eq(answerGenerationJobs.id, id))
     .returning();
 

@@ -29,6 +29,14 @@ interface ReviewAnswerResponse {
   reviewer_model: string;
 }
 
+interface RubricSchema {
+  rolePrompt: string;
+  answerPrinciples: string[];
+  dimensions: Array<{ name: string; maxScore: number; criteria: string[]; pitfalls: string[] }>;
+  retryPolicy: string[];
+  outputRules: string[];
+}
+
 interface GeneratedAttempt {
   itemId: string;
   material: string | null;
@@ -58,7 +66,7 @@ const worker = new Worker<RunJobPayload>(
 
     const [job] = await db
       .update(answerGenerationJobs)
-      .set({ status: "running", updatedAt: new Date() })
+      .set({ status: "running", startedAt: current.startedAt ?? new Date(), completedAt: null, updatedAt: new Date() })
       .where(and(eq(answerGenerationJobs.id, queueJob.data.jobId), ne(answerGenerationJobs.status, "cancelled")))
       .returning();
 
@@ -106,6 +114,8 @@ const worker = new Worker<RunJobPayload>(
             material: item.material,
             question: item.question,
             rubric: job.rubric,
+            compiledPrompt: job.compiledPrompt,
+            rubricSchema: job.rubricSchema,
             answerMinutes: Number(job.answerMinutes),
             targetWords: item.targetWords,
             previousFeedback: feedbackByItem.get(item.id) ?? []
@@ -157,6 +167,7 @@ const worker = new Worker<RunJobPayload>(
             material: generated.material,
             question: generated.question,
             rubric: job.rubric,
+            rubricSchema: job.rubricSchema,
             answer: generated.answer,
             passingScore: job.passingScore
           });
@@ -223,7 +234,7 @@ const worker = new Worker<RunJobPayload>(
       const allPassed = finalItems.length > 0 && finalItems.every((item) => item.status === "passed");
       await db
         .update(answerGenerationJobs)
-        .set({ status: allPassed ? "completed" : "needs_review", updatedAt: new Date() })
+        .set({ status: allPassed ? "completed" : "needs_review", completedAt: new Date(), updatedAt: new Date() })
         .where(eq(answerGenerationJobs.id, job.id));
     }
   },
@@ -256,6 +267,8 @@ async function generateAnswer(input: {
   material: string | null;
   question: string;
   rubric: string;
+  compiledPrompt: string | null;
+  rubricSchema: RubricSchema | null;
   answerMinutes: number;
   targetWords: number;
   previousFeedback: string[];
@@ -267,6 +280,8 @@ async function generateAnswer(input: {
       material: input.material,
       question: input.question,
       rubric: input.rubric,
+      compiled_prompt: input.compiledPrompt,
+      rubric_schema: input.rubricSchema ? toApiRubricSchema(input.rubricSchema) : null,
       answer_minutes: input.answerMinutes,
       target_words: input.targetWords,
       previous_feedback: input.previousFeedback
@@ -284,6 +299,7 @@ async function reviewAnswer(input: {
   material: string | null;
   question: string;
   rubric: string;
+  rubricSchema: RubricSchema | null;
   answer: string;
   passingScore: number;
 }) {
@@ -294,6 +310,7 @@ async function reviewAnswer(input: {
       material: input.material,
       question: input.question,
       rubric: input.rubric,
+      rubric_schema: input.rubricSchema ? toApiRubricSchema(input.rubricSchema) : null,
       answer: input.answer,
       passing_score: input.passingScore
     })
@@ -304,6 +321,21 @@ async function reviewAnswer(input: {
   }
 
   return (await response.json()) as ReviewAnswerResponse;
+}
+
+function toApiRubricSchema(schema: RubricSchema) {
+  return {
+    role_prompt: schema.rolePrompt,
+    answer_principles: schema.answerPrinciples,
+    dimensions: schema.dimensions.map((dimension) => ({
+      name: dimension.name,
+      max_score: dimension.maxScore,
+      criteria: dimension.criteria,
+      pitfalls: dimension.pitfalls
+    })),
+    retry_policy: schema.retryPolicy,
+    output_rules: schema.outputRules
+  };
 }
 
 async function getJob(jobId: string) {

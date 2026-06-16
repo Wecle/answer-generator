@@ -15,6 +15,8 @@ export async function GET(_: Request, context: { params: Promise<{ id: string }>
   const markdown = formatJobMarkdown({
     title: job.title,
     rubric: job.rubric,
+    startedAt: job.startedAt,
+    completedAt: job.completedAt,
     items: items.map((item, index) => ({
       index: index + 1,
       title: item.title,

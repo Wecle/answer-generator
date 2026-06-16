@@ -45,11 +45,21 @@ export const answerGenerationJobs = pgTable("answer_generation_jobs", {
   id: uuid("id").defaultRandom().primaryKey(),
   title: text("title").notNull(),
   rubric: text("rubric").notNull(),
+  compiledPrompt: text("compiled_prompt"),
+  rubricSchema: jsonb("rubric_schema").$type<{
+    rolePrompt: string;
+    answerPrinciples: string[];
+    dimensions: Array<{ name: string; maxScore: number; criteria: string[]; pitfalls: string[] }>;
+    retryPolicy: string[];
+    outputRules: string[];
+  }>(),
   answerMinutes: numeric("answer_minutes", { precision: 4, scale: 1 }).notNull(),
   passingScore: integer("passing_score").notNull().default(95),
   maxAttempts: integer("max_attempts").notNull().default(3),
   status: jobStatus("status").notNull().default("draft"),
   createdBy: text("created_by"),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
 });

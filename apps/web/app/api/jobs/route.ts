@@ -2,6 +2,7 @@ import { createDb, answerGenerationItems, answerGenerationJobs } from "@answer-g
 import { estimateAnswerWordRange, summarizeJobProgress, type GenerationItemStatus } from "@answer-generator/shared";
 import { desc } from "drizzle-orm";
 import { z } from "zod";
+import { compileRubricForJob } from "@/lib/rubric-compiler";
 
 const itemSchema = z.object({
   title: z.string().optional(),
@@ -21,11 +22,18 @@ const createJobSchema = z.object({
 export async function POST(request: Request) {
   const input = createJobSchema.parse(await request.json());
   const db = createDb();
+  const compiled = await compileRubricForJob({
+    rubric: input.rubric,
+    answerMinutes: input.answerMinutes,
+    passingScore: input.passingScore
+  });
   const [job] = await db
     .insert(answerGenerationJobs)
     .values({
       title: input.title,
       rubric: input.rubric,
+      compiledPrompt: compiled.compiledPrompt,
+      rubricSchema: compiled.rubricSchema,
       answerMinutes: String(input.answerMinutes),
       passingScore: input.passingScore,
       maxAttempts: input.maxAttempts,
@@ -66,12 +74,15 @@ export async function GET() {
     databaseReady: true,
     jobs: jobs.map((job) => {
       const jobItems = items.filter((item) => item.jobId === job.id);
+      const terminalStatus = job.status === "completed" || job.status === "needs_review" || job.status === "failed" || job.status === "cancelled";
       return {
         id: job.id,
         title: job.title,
         status: job.status,
         createdAt: job.createdAt,
         updatedAt: job.updatedAt,
+        startedAt: job.startedAt ?? (job.status === "draft" ? null : job.createdAt),
+        completedAt: job.completedAt ?? (terminalStatus ? job.updatedAt : null),
         progress: summarizeJobProgress(jobItems.map((item) => item.status as GenerationItemStatus))
       };
     })
