@@ -1,0 +1,174 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: answer-generator-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.13.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: python -m pip install -r apps/api/requirements.txt
+
+      - run: pnpm typecheck
+
+      - run: pnpm test
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image metadata
+        id: image-meta
+        run: |
+          echo "namespace=${REGISTRY}/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+          echo "web_tag=web-${{ hashFiles('apps/web/**', 'packages/db/**', 'packages/shared/**', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml', 'apps/web/Dockerfile.prod') }}" >> "$GITHUB_OUTPUT"
+          echo "task_tag=task-${{ hashFiles('packages/db/**', 'packages/shared/**', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml', 'apps/web/Dockerfile.prod') }}" >> "$GITHUB_OUTPUT"
+          echo "api_tag=api-${{ hashFiles('apps/api/**', 'apps/api/Dockerfile.prod') }}" >> "$GITHUB_OUTPUT"
+          echo "worker_tag=worker-${{ hashFiles('apps/worker/**', 'packages/db/**', 'packages/shared/**', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml', 'apps/worker/Dockerfile.prod') }}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/web/Dockerfile.prod
+          push: true
+          tags: |
+            ${{ steps.image-meta.outputs.namespace }}/answer-generator-web:${{ steps.image-meta.outputs.web_tag }}
+            ${{ steps.image-meta.outputs.namespace }}/answer-generator-web:latest
+
+      - name: Build and push task image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/web/Dockerfile.prod
+          target: task
+          push: true
+          tags: |
+            ${{ steps.image-meta.outputs.namespace }}/answer-generator-task:${{ steps.image-meta.outputs.task_tag }}
+            ${{ steps.image-meta.outputs.namespace }}/answer-generator-task:latest
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/api/Dockerfile.prod
+          push: true
+          tags: |
+            ${{ steps.image-meta.outputs.namespace }}/answer-generator-api:${{ steps.image-meta.outputs.api_tag }}
+            ${{ steps.image-meta.outputs.namespace }}/answer-generator-api:latest
+
+      - name: Build and push worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/worker/Dockerfile.prod
+          push: true
+          tags: |
+            ${{ steps.image-meta.outputs.namespace }}/answer-generator-worker:${{ steps.image-meta.outputs.worker_tag }}
+            ${{ steps.image-meta.outputs.namespace }}/answer-generator-worker:latest
+
+  deploy:
+    needs: build
+    runs-on:
+      - self-hosted
+      - linux
+      - answer-generator-prod
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Set image metadata
+        id: image-meta
+        run: |
+          echo "namespace=${REGISTRY}/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+          echo "web_tag=web-${{ hashFiles('apps/web/**', 'packages/db/**', 'packages/shared/**', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml', 'apps/web/Dockerfile.prod') }}" >> "$GITHUB_OUTPUT"
+          echo "task_tag=task-${{ hashFiles('packages/db/**', 'packages/shared/**', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml', 'apps/web/Dockerfile.prod') }}" >> "$GITHUB_OUTPUT"
+          echo "api_tag=api-${{ hashFiles('apps/api/**', 'apps/api/Dockerfile.prod') }}" >> "$GITHUB_OUTPUT"
+          echo "worker_tag=worker-${{ hashFiles('apps/worker/**', 'packages/db/**', 'packages/shared/**', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml', 'apps/worker/Dockerfile.prod') }}" >> "$GITHUB_OUTPUT"
+
+      - name: Write production env
+        run: |
+          umask 077
+          cat > .env.production <<'EOF'
+          POSTGRES_USER=${{ vars.POSTGRES_USER || 'answer_generator' }}
+          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DB=${{ vars.POSTGRES_DB || 'answer_generator' }}
+          DATABASE_URL=postgresql://${{ vars.POSTGRES_USER || 'answer_generator' }}:${{ secrets.POSTGRES_PASSWORD }}@postgres:5432/${{ vars.POSTGRES_DB || 'answer_generator' }}
+          REDIS_URL=${{ vars.REDIS_URL || 'redis://redis:6379' }}
+          AI_SERVICE_URL=${{ vars.AI_SERVICE_URL || 'http://api:8001' }}
+          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL=${{ vars.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
+          OPENAI_MODEL=${{ vars.OPENAI_MODEL || 'gpt-4o-mini' }}
+          WORKER_CONCURRENCY=${{ vars.WORKER_CONCURRENCY || '1' }}
+          EOF
+          cat > .env.images <<EOF
+          WEB_IMAGE=${{ steps.image-meta.outputs.namespace }}/answer-generator-web:${{ steps.image-meta.outputs.web_tag }}
+          TASK_IMAGE=${{ steps.image-meta.outputs.namespace }}/answer-generator-task:${{ steps.image-meta.outputs.task_tag }}
+          API_IMAGE=${{ steps.image-meta.outputs.namespace }}/answer-generator-api:${{ steps.image-meta.outputs.api_tag }}
+          WORKER_IMAGE=${{ steps.image-meta.outputs.namespace }}/answer-generator-worker:${{ steps.image-meta.outputs.worker_tag }}
+          EOF
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Start dependencies
+        run: docker compose --env-file .env.production --env-file .env.images -f docker-compose.prod.yml up -d postgres redis
+
+      - name: Pull images
+        run: docker compose --env-file .env.production --env-file .env.images -f docker-compose.prod.yml pull --policy missing web api worker migrate
+
+      - name: Run migrations
+        run: docker compose --env-file .env.production --env-file .env.images -f docker-compose.prod.yml run --rm migrate
+
+      - name: Start services
+        run: docker compose --env-file .env.production --env-file .env.images -f docker-compose.prod.yml up -d web api worker
+
+      - name: Show status
+        run: docker compose --env-file .env.production --env-file .env.images -f docker-compose.prod.yml ps
