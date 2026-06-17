@@ -77,7 +77,9 @@ pnpm --filter @answer-generator/worker dev
 
 ## 部署建议
 
-推荐使用 Docker Compose 部署，服务拆分为：
+推荐使用 GitHub Actions 自动部署，方式与 CiviMind 一致：GitHub 构建镜像并推送到 GHCR，服务器上的自托管 runner 拉取镜像、执行迁移、启动服务。服务器手动命令主要用于首次排障和紧急回滚。
+
+生产服务通过 Docker Compose 编排：
 
 | 服务 | 说明 |
 | --- | --- |
@@ -88,7 +90,47 @@ pnpm --filter @answer-generator/worker dev
 | `postgres` | 独立 Postgres 数据卷 |
 | `redis` | 独立 Redis 数据卷 |
 
-### 服务器手动部署
+### GitHub Actions 部署
+
+已提供 `.github/workflows/deploy.yml`，流程参考 CiviMind：
+
+1. `test`：安装依赖、执行 `pnpm typecheck` 和 `pnpm test`
+2. `build`：构建并推送 `web`、`task`、`api`、`worker` 镜像到 GHCR
+3. `deploy`：在自托管 runner 上写入 `.env.production`，拉取镜像、执行迁移、启动服务
+
+触发方式：
+
+- 推送到 `main`
+- 在 Actions 页面手动执行 `Deploy Answer Generator`
+
+自托管 runner 需要标签：
+
+```text
+self-hosted
+linux
+answer-generator-prod
+```
+
+服务器需要提前准备 Docker、Docker Compose、GitHub self-hosted runner、Nginx。首次部署完成后，后续发布只需要推送代码到 `main`，Actions 会自动完成构建和部署。
+
+GitHub Environment `production` 需要配置：
+
+| 类型 | 名称 | 说明 |
+| --- | --- | --- |
+| Secret | `DEPLOY_SSH_KEY` | 部署机拉取仓库用的私钥 |
+| Secret | `POSTGRES_PASSWORD` | 生产数据库密码 |
+| Secret | `OPENAI_API_KEY` | OpenAI 兼容接口密钥 |
+| Variable | `POSTGRES_USER` | 默认 `answer_generator` |
+| Variable | `POSTGRES_DB` | 默认 `answer_generator` |
+| Variable | `REDIS_URL` | 默认 `redis://redis:6379` |
+| Variable | `AI_SERVICE_URL` | 默认 `http://api:8001` |
+| Variable | `OPENAI_BASE_URL` | 默认 `https://api.openai.com/v1` |
+| Variable | `OPENAI_MODEL` | 默认 `gpt-4o-mini` |
+| Variable | `WORKER_CONCURRENCY` | 默认 `1` |
+
+### 服务器手动兜底
+
+用于排查 Actions、镜像、环境变量或服务器网络问题：
 
 ```bash
 cp .env.production.example .env.production
@@ -113,37 +155,6 @@ deploy/nginx/answer-generator.conf
 ```
 
 复制后把 `server_name` 改为实际域名，并按服务器习惯启用配置。
-
-### GitHub Actions 部署
-
-已提供 `.github/workflows/deploy.yml`，流程参考 CiviMind：
-
-1. `test`：安装依赖、执行 `pnpm typecheck` 和 `pnpm test`
-2. `build`：构建并推送 `web`、`task`、`api`、`worker` 镜像到 GHCR
-3. `deploy`：在自托管 runner 上写入 `.env.production`，拉取镜像、执行迁移、启动服务
-
-自托管 runner 需要标签：
-
-```text
-self-hosted
-linux
-answer-generator-prod
-```
-
-GitHub Environment `production` 需要配置：
-
-| 类型 | 名称 | 说明 |
-| --- | --- | --- |
-| Secret | `DEPLOY_SSH_KEY` | 部署机拉取仓库用的私钥 |
-| Secret | `POSTGRES_PASSWORD` | 生产数据库密码 |
-| Secret | `OPENAI_API_KEY` | OpenAI 兼容接口密钥 |
-| Variable | `POSTGRES_USER` | 默认 `answer_generator` |
-| Variable | `POSTGRES_DB` | 默认 `answer_generator` |
-| Variable | `REDIS_URL` | 默认 `redis://redis:6379` |
-| Variable | `AI_SERVICE_URL` | 默认 `http://api:8001` |
-| Variable | `OPENAI_BASE_URL` | 默认 `https://api.openai.com/v1` |
-| Variable | `OPENAI_MODEL` | 默认 `gpt-4o-mini` |
-| Variable | `WORKER_CONCURRENCY` | 默认 `1` |
 
 ### 与 CiviMind 同服
 
