@@ -148,6 +148,8 @@ jobs:
           DATABASE_URL=postgresql://${{ vars.POSTGRES_USER || 'answer_generator' }}:${{ secrets.POSTGRES_PASSWORD }}@postgres:5432/${{ vars.POSTGRES_DB || 'answer_generator' }}
           REDIS_URL=${{ vars.REDIS_URL || 'redis://redis:6379' }}
           AI_SERVICE_URL=${{ vars.AI_SERVICE_URL || 'http://api:8001' }}
+          WEB_BIND_HOST=${{ vars.WEB_BIND_HOST || '0.0.0.0' }}
+          WEB_PORT=${{ vars.WEB_PORT || '3011' }}
           OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL=${{ vars.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
           OPENAI_MODEL=${{ vars.OPENAI_MODEL || 'gpt-4o-mini' }}

@@ -83,7 +83,7 @@ pnpm --filter @answer-generator/worker dev
 
 | 服务 | 说明 |
 | --- | --- |
-| `web` | Next.js 管理后台与 BFF API，默认绑定 `127.0.0.1:3001` |
+| `web` | Next.js 管理后台与 BFF API，默认绑定 `0.0.0.0:3011` |
 | `api` | FastAPI AI 服务，供 web 和 worker 内网调用 |
 | `worker` | BullMQ Worker，消费 Redis 队列并执行批量生成 |
 | `migrate` | 一次性数据库迁移任务 |
@@ -124,6 +124,8 @@ GitHub Environment `production` 需要配置：
 | Variable | `POSTGRES_DB` | 默认 `answer_generator` |
 | Variable | `REDIS_URL` | 默认 `redis://redis:6379` |
 | Variable | `AI_SERVICE_URL` | 默认 `http://api:8001` |
+| Variable | `WEB_BIND_HOST` | 默认 `0.0.0.0`，公网访问使用该默认值 |
+| Variable | `WEB_PORT` | 默认 `3011` |
 | Variable | `OPENAI_BASE_URL` | 默认 `https://api.openai.com/v1` |
 | Variable | `OPENAI_MODEL` | 默认 `gpt-4o-mini` |
 | Variable | `WORKER_CONCURRENCY` | 默认 `1` |
@@ -142,10 +144,10 @@ docker compose --env-file .env.production -f docker-compose.prod.yml up -d web a
 docker compose --env-file .env.production -f docker-compose.prod.yml ps
 ```
 
-默认 web 端口为 `127.0.0.1:3001`，适合同服部署在 CiviMind 旁边，再用 Nginx 按独立域名反代。需要改端口时设置：
+默认 web 端口为 `0.0.0.0:3011`，可以通过 `http://服务器IP:3011` 访问。服务器安全组和防火墙需要放行 `3011` 端口。需要改端口时设置：
 
 ```bash
-WEB_PORT=3002 docker compose --env-file .env.production -f docker-compose.prod.yml up -d web
+WEB_PORT=3021 docker compose --env-file .env.production -f docker-compose.prod.yml up -d web
 ```
 
 Nginx 示例在：
@@ -158,4 +160,4 @@ deploy/nginx/answer-generator.conf
 
 ### 与 CiviMind 同服
 
-当前生产 compose 使用项目独立的 Postgres/Redis 容器和数据卷，Web 端口默认 `3001`，可以和 CiviMind 的 `3000` 同服运行。Worker 并发建议从 `1` 开始，避免批量生成任务挤占服务器资源。
+当前生产 compose 使用项目独立的 Postgres/Redis 容器和数据卷，Web 端口默认 `3011`，可以和 CiviMind 的 `3000` 同服运行。Worker 并发建议从 `1` 开始，避免批量生成任务挤占服务器资源。
