@@ -74,6 +74,8 @@ jobs:
           context: .
           file: apps/web/Dockerfile.prod
           push: true
+          cache-from: type=gha,scope=answer-generator-web
+          cache-to: type=gha,scope=answer-generator-web,mode=max
           tags: |
             ${{ steps.image-meta.outputs.namespace }}/answer-generator-web:${{ steps.image-meta.outputs.web_tag }}
             ${{ steps.image-meta.outputs.namespace }}/answer-generator-web:latest
@@ -85,6 +87,8 @@ jobs:
           file: apps/web/Dockerfile.prod
           target: task
           push: true
+          cache-from: type=gha,scope=answer-generator-task
+          cache-to: type=gha,scope=answer-generator-task,mode=max
           tags: |
             ${{ steps.image-meta.outputs.namespace }}/answer-generator-task:${{ steps.image-meta.outputs.task_tag }}
             ${{ steps.image-meta.outputs.namespace }}/answer-generator-task:latest
@@ -95,6 +99,8 @@ jobs:
           context: .
           file: apps/api/Dockerfile.prod
           push: true
+          cache-from: type=gha,scope=answer-generator-api
+          cache-to: type=gha,scope=answer-generator-api,mode=max
           tags: |
             ${{ steps.image-meta.outputs.namespace }}/answer-generator-api:${{ steps.image-meta.outputs.api_tag }}
             ${{ steps.image-meta.outputs.namespace }}/answer-generator-api:latest
@@ -105,6 +111,8 @@ jobs:
           context: .
           file: apps/worker/Dockerfile.prod
           push: true
+          cache-from: type=gha,scope=answer-generator-worker
+          cache-to: type=gha,scope=answer-generator-worker,mode=max
           tags: |
             ${{ steps.image-meta.outputs.namespace }}/answer-generator-worker:${{ steps.image-meta.outputs.worker_tag }}
             ${{ steps.image-meta.outputs.namespace }}/answer-generator-worker:latest
