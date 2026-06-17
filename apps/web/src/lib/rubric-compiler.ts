@@ -53,6 +53,18 @@ export async function compileRubricForJob(input: {
   };
 }
 
+export function compileRubricLocally(input: {
+  rubric: string;
+  answerMinutes: number;
+  passingScore: number;
+}) {
+  const rubricSchema = compileLocally(input.rubric, input.answerMinutes, input.passingScore);
+  return {
+    compiledPrompt: buildCompiledPrompt(rubricSchema, input.answerMinutes, input.passingScore),
+    rubricSchema
+  };
+}
+
 function toCamelSchema(schema: CompileRubricResponse["rubric_schema"]): RubricSchema {
   return {
     rolePrompt: schema.role_prompt,

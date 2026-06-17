@@ -1,4 +1,5 @@
 export type GenerationJobStatus =
+  | "compiling_rubric"
   | "draft"
   | "queued"
   | "running"

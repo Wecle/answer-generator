@@ -36,6 +36,13 @@
       "when": 1781596900000,
       "tag": "0004_add_job_timing",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1781683200000,
+      "tag": "0005_add_compiling_rubric_status",
+      "breakpoints": true
     }
   ]
 }

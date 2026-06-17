@@ -1,7 +1,7 @@
 "use client";
 
 import { BadgeCheck, Download, FileUp, Play, Plus, RotateCw, Save, Settings } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { estimateAnswerWordRange, shouldPollJobStatus, type GenerationJobStatus } from "@answer-generator/shared";
@@ -126,6 +126,7 @@ export function Dashboard() {
   const [result, setResult] = useState<RunResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [taskFormErrors, setTaskFormErrors] = useState<TaskFormErrors>({});
+  const compilingRubricRequests = useRef<Set<string>>(new Set());
 
   const selected = items.find((item) => item.id === selectedId) ?? null;
   const selectedForm = selected
@@ -204,7 +205,9 @@ export function Dashboard() {
   const isPollingActiveJob = shouldPollJobStatus(activeJobStatus);
   const hasActiveItemProcessing = jobProgress.processing > 0;
   const shouldPollActiveJob = isPollingActiveJob || hasActiveItemProcessing;
+  const isRubricCompiling = activeJobStatus === "compiling_rubric";
   const isEditingLocked = shouldPollActiveJob;
+  const lockedEditMessage = isRubricCompiling ? "正在分析评分标准，完成后可继续操作" : "生成中暂不允许新增或修改题目";
   const canRestartJob = items.length > 0 && !isEditingLocked && activeJobStatus !== "completed";
   const restartJobLabel = activeJobStatus === "draft" ? "开始任务" : activeJobStatus === "cancelled" ? "重新开始任务" : "重新审核未通过";
   const answerSections = useMemo(() => parseAnswerSections(visibleResult?.final_answer ?? ""), [visibleResult?.final_answer]);
@@ -227,6 +230,14 @@ export function Dashboard() {
 
     return () => window.clearInterval(timer);
   }, [activeJobId, shouldPollActiveJob]);
+
+  useEffect(() => {
+    if (!activeJobId || activeJobStatus !== "compiling_rubric") {
+      return;
+    }
+
+    void analyzeRubric(activeJobId);
+  }, [activeJobId, activeJobStatus]);
 
   useEffect(() => {
     if (!selected) {
@@ -257,7 +268,7 @@ export function Dashboard() {
 
   function openEditTaskModal() {
     if (isEditingLocked) {
-      setError("生成中暂不允许修改任务设置");
+      setError(isRubricCompiling ? "正在分析评分标准，完成后可修改任务设置" : "生成中暂不允许修改任务设置");
       return;
     }
     setTaskFormErrors({});
@@ -334,7 +345,7 @@ export function Dashboard() {
       }
       const payload = (await response.json()) as { jobId: string };
       setActiveJobId(payload.jobId);
-      setActiveJobStatus("draft");
+      setActiveJobStatus("compiling_rubric");
       setTitle(input.title);
       setRubric(input.rubric);
       setAnswerMinutes(input.answerMinutes);
@@ -346,6 +357,7 @@ export function Dashboard() {
       setTaskModalOpen(false);
       await loadJobs();
       await loadJobDetail(payload.jobId, { preserveSelection: true });
+      void analyzeRubric(payload.jobId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "保存失败");
     } finally {
@@ -354,9 +366,33 @@ export function Dashboard() {
     }
   }
 
+  async function analyzeRubric(jobId: string) {
+    if (compilingRubricRequests.current.has(jobId)) {
+      return;
+    }
+
+    compilingRubricRequests.current.add(jobId);
+    try {
+      const response = await fetch(`/api/jobs/${jobId}/compile-rubric`, { method: "POST" });
+      if (!response.ok) {
+        setError(normalizeApiError(await response.text()));
+        return;
+      }
+
+      await loadJobs({ silent: true });
+      if (jobId === activeJobId || !activeJobId) {
+        await loadJobDetail(jobId, { preserveSelection: true, silent: true });
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "评分标准分析失败");
+    } finally {
+      compilingRubricRequests.current.delete(jobId);
+    }
+  }
+
   function requestUpdateJobSettings() {
     if (isEditingLocked) {
-      setError("生成中暂不允许修改任务设置");
+      setError(isRubricCompiling ? "正在分析评分标准，完成后可修改任务设置" : "生成中暂不允许修改任务设置");
       return;
     }
     setError(null);
@@ -370,7 +406,7 @@ export function Dashboard() {
   async function updateJobSettings(applyMode: "regenerate_all" | "future_only") {
     if (!activeJobId) return;
     if (isEditingLocked) {
-      setError("生成中暂不允许修改任务设置");
+      setError(isRubricCompiling ? "正在分析评分标准，完成后可修改任务设置" : "生成中暂不允许修改任务设置");
       return;
     }
     setError(null);
@@ -399,6 +435,7 @@ export function Dashboard() {
       setSettingsApplyModalOpen(false);
       await loadJobs();
       await loadJobDetail(activeJobId, { preserveSelection: applyMode === "future_only" });
+      void analyzeRubric(activeJobId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "修改任务设置失败");
     } finally {
@@ -414,7 +451,7 @@ export function Dashboard() {
       return;
     }
     if (isEditingLocked) {
-      setError("生成中暂不允许新增或修改题目");
+      setError(lockedEditMessage);
       return;
     }
     setError(null);
@@ -426,7 +463,7 @@ export function Dashboard() {
   async function parseDocument(mode: DocumentParseMode) {
     if (!pendingDocumentFile) return;
     if (isEditingLocked) {
-      setDocumentParseError("生成中暂不允许新增或修改题目");
+      setDocumentParseError(lockedEditMessage);
       return;
     }
     const form = new FormData();
@@ -464,7 +501,7 @@ export function Dashboard() {
       return;
     }
     if (isEditingLocked) {
-      setError("生成中暂不允许新增或修改题目");
+      setError(lockedEditMessage);
       return;
     }
 
@@ -486,7 +523,7 @@ export function Dashboard() {
 
   async function addQuestionFromModal() {
     if (isEditingLocked) {
-      setError("生成中暂不允许新增或修改题目");
+      setError(lockedEditMessage);
       return;
     }
     const material = questionForm.materials.map((value, index) => formatBlock("材料", value, index)).filter(Boolean).join("\n\n");
@@ -604,6 +641,10 @@ export function Dashboard() {
       openCreateTaskModal();
       return;
     }
+    if (isRubricCompiling) {
+      setError("正在分析评分标准，完成后可开始任务");
+      return;
+    }
 
     setError(null);
     const response = await fetch(`/api/jobs/${activeJobId}/run`, { method: "POST" });
@@ -659,7 +700,7 @@ export function Dashboard() {
   async function saveSelectedItem() {
     if (!activeJobId || !selected) return;
     if (isEditingLocked) {
-      setError("生成中暂不允许修改题目");
+      setError(lockedEditMessage);
       return;
     }
     if (!selected.question.trim()) {
@@ -695,7 +736,7 @@ export function Dashboard() {
   async function deleteSelectedItem() {
     if (!activeJobId || !selected) return;
     if (isEditingLocked) {
-      setError("生成中暂不允许删除题目");
+      setError(lockedEditMessage);
       return;
     }
     setError(null);
@@ -766,26 +807,34 @@ export function Dashboard() {
         {activeJobId ? <div className="toolbar">
           <div className="toolbar-copy">
             <h2>{title}</h2>
-            {items.length > 0 ? (
+            {items.length > 0 || isRubricCompiling ? (
               <div className="job-progress">
                 <div className="job-progress-head">
                   <span>
-                    {jobProgress.activeItem
+                    {isRubricCompiling
+                      ? "正在分析评分标准中"
+                      : jobProgress.activeItem
                       ? `${jobProgress.activeItem.status === "reviewing" ? "当前正在审核" : "当前正在生成"}：${jobProgress.activeItem.title || `题目 ${jobProgress.activeIndex + 1}`}`
                       : isPollingActiveJob
                         ? "等待 Worker 接收任务"
                         : statusLabel(activeJobStatus)}
                   </span>
-                  <strong>{jobProgress.percent}%</strong>
+                  <strong>{isRubricCompiling ? "准备中" : `${jobProgress.percent}%`}</strong>
                 </div>
-                <div className="job-progress-bar" aria-label={`任务进度 ${jobProgress.percent}%`}>
-                  <i style={{ width: `${jobProgress.percent}%` }} />
+                <div className="job-progress-bar" aria-label={isRubricCompiling ? "评分标准分析中" : `任务进度 ${jobProgress.percent}%`}>
+                  <i style={{ width: isRubricCompiling ? "45%" : `${jobProgress.percent}%` }} />
                 </div>
                 <div className="job-progress-meta">
-                  <span>已处理 {jobProgress.completed}/{jobProgress.total}</span>
-                  <span>已通过 {jobProgress.passed}</span>
-                  <span>待人工 {jobProgress.needsReview}</span>
-                  <span>耗时 {elapsedLabel}</span>
+                  {isRubricCompiling ? (
+                    <span>分析完成后可上传 Word、新增题目或修改设置</span>
+                  ) : (
+                    <>
+                      <span>已处理 {jobProgress.completed}/{jobProgress.total}</span>
+                      <span>已通过 {jobProgress.passed}</span>
+                      <span>待人工 {jobProgress.needsReview}</span>
+                      <span>耗时 {elapsedLabel}</span>
+                    </>
+                  )}
                 </div>
               </div>
             ) : null}
@@ -1026,8 +1075,8 @@ export function Dashboard() {
           </section> : null}
         </div> : (
           <section className="empty-queue-state">
-            <span>题目队列为空</span>
-            <p>等待导入题目材料，生成流程会在题目加入后开始准备。</p>
+            <span>{isRubricCompiling ? "正在分析评分标准中" : "题目队列为空"}</span>
+            <p>{isRubricCompiling ? "系统正在整合评分标准和生成提示词，完成后即可上传 Word 或新增题目。" : "等待导入题目材料，生成流程会在题目加入后开始准备。"}</p>
           </section>
         )}
         </>
@@ -1446,6 +1495,7 @@ function LoadingLabel({ loading, loadingText, text }: { loading: boolean; loadin
 
 function statusLabel(status: string) {
   const labels: Record<string, string> = {
+    compiling_rubric: "分析评分标准中",
     draft: "草稿",
     queued: "队列中",
     running: "运行中",

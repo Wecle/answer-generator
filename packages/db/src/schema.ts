@@ -11,6 +11,7 @@ import {
 } from "drizzle-orm/pg-core";
 
 export const jobStatus = pgEnum("generation_job_status", [
+  "compiling_rubric",
   "draft",
   "queued",
   "running",

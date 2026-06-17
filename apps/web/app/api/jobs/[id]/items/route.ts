@@ -23,6 +23,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return Response.json({ error: "Job not found" }, { status: 404 });
   }
 
+  if (job.status === "compiling_rubric") {
+    return Response.json({ error: "评分标准分析中，请稍后再添加题目" }, { status: 409 });
+  }
+
   const range = estimateAnswerWordRange(Number(job.answerMinutes));
   const inserted = await db
     .insert(answerGenerationItems)

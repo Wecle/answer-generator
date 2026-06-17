@@ -37,6 +37,23 @@ def test_parse_question_paragraphs_detects_title_material_and_multiple_questions
     assert "问题 3" in questions[0].question
 
 
+def test_parse_question_paragraphs_keeps_no_material_exam_prompts_as_questions():
+    questions = parse_question_paragraphs(
+        [
+            "2025年4月27日宁夏区考面试题",
+            "1. (论述题)近年来，AI 应用场景越来越多，让公众办公和生活提供了越来越多便捷、智能的服",
+            "务。然而也出现了一些问题，引发了公众对AI 应用安全的担忧。你怎么看待AI的发展?",
+            "2. (论述题)请你运用法治思维，针对“美颜”农产品提出解决建议。",
+        ]
+    )
+
+    assert len(questions) == 1
+    assert questions[0].material is None
+    assert "问题 1" in questions[0].question
+    assert "服\n务" in questions[0].question
+    assert "问题 2" in questions[0].question
+
+
 def test_questions_from_ai_data_normalizes_valid_items():
     questions = _questions_from_ai_data(
         {
@@ -57,3 +74,20 @@ def test_questions_from_ai_data_normalizes_valid_items():
     assert questions[0].material == "某地推进农产品质量监管。"
     assert questions[1].title is None
     assert questions[1].material is None
+
+
+def test_questions_from_ai_data_preserves_ai_material_judgment():
+    questions = _questions_from_ai_data(
+        {
+            "questions": [
+                {
+                    "title": "2025年4月29日宁夏区考面试题",
+                    "material": "请结合他们三人的故事，谈谈你看到了什么？",
+                    "question": "请说说你会怎么做？",
+                }
+            ]
+        }
+    )
+
+    assert questions[0].material == "请结合他们三人的故事，谈谈你看到了什么？"
+    assert questions[0].question == "请说说你会怎么做？"

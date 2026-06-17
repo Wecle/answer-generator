@@ -6,6 +6,16 @@ import { enqueueGenerationJob } from "@/lib/queue";
 export async function POST(_: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
   const db = createDb();
+  const [currentJob] = await db.select().from(answerGenerationJobs).where(eq(answerGenerationJobs.id, id));
+
+  if (!currentJob) {
+    return Response.json({ error: "Job not found" }, { status: 404 });
+  }
+
+  if (currentJob.status === "compiling_rubric") {
+    return Response.json({ error: "评分标准分析中，请稍后再开始任务" }, { status: 409 });
+  }
+
   const reset = await resetJobResults(db, id);
   const nextStatus = reset.resetItems > 0 ? "queued" : "completed";
   const now = new Date();
@@ -19,10 +29,6 @@ export async function POST(_: Request, context: { params: Promise<{ id: string }
     })
     .where(eq(answerGenerationJobs.id, id))
     .returning();
-
-  if (!job) {
-    return Response.json({ error: "Job not found" }, { status: 404 });
-  }
 
   if (reset.resetItems === 0) {
     return Response.json({ jobId: job.id, queued: false });

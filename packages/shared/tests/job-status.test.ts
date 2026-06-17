@@ -3,6 +3,7 @@ import { shouldPollJobStatus } from "../src/job-status";
 
 describe("shouldPollJobStatus", () => {
   it("polls jobs that can still change", () => {
+    expect(shouldPollJobStatus("compiling_rubric")).toBe(true);
     expect(shouldPollJobStatus("queued")).toBe(true);
     expect(shouldPollJobStatus("running")).toBe(true);
   });

@@ -9,7 +9,7 @@ import { estimateAnswerWordRange, summarizeJobProgress, type GenerationItemStatu
 import { eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { resetJobResults, updatePendingItemTargets } from "@/lib/job-reset";
-import { compileRubricForJob } from "@/lib/rubric-compiler";
+import { compileRubricLocally } from "@/lib/rubric-compiler";
 
 const updateJobSchema = z.object({
   title: z.string().min(1),
@@ -78,7 +78,7 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
   const input = updateJobSchema.parse(await request.json());
   const db = createDb();
   const range = estimateAnswerWordRange(input.answerMinutes);
-  const compiled = await compileRubricForJob({
+  const compiled = compileRubricLocally({
     rubric: input.rubric,
     answerMinutes: input.answerMinutes,
     passingScore: input.passingScore
@@ -93,7 +93,7 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
       answerMinutes: String(input.answerMinutes),
       passingScore: input.passingScore,
       maxAttempts: input.maxAttempts,
-      status: "draft",
+      status: "compiling_rubric",
       updatedAt: new Date()
     })
     .where(eq(answerGenerationJobs.id, id))

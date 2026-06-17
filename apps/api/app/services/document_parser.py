@@ -36,9 +36,12 @@ async def parse_docx_questions_with_ai(content: bytes) -> List[ParsedQuestion]:
         "解析规则：\n"
         "1. 自动判断题目名称、材料、问题。\n"
         "2. 同一日期或同一套题下的多个问题可以放在同一个 question 字段里，用“问题 1”“问题 2”分段。\n"
-        "3. 没有材料时 material 为空字符串。\n"
-        "4. 保留题干关键限定条件，不要改写题目含义。\n"
-        "5. 不要把参考答案、评分标准、页眉页脚当成题目。\n\n"
+        "3. material 只放独立的背景材料、情境材料或事实材料。\n"
+        "4. question 必须保留考生需要回答的完整题干，包括题干中的案例描述、限定条件和作答要求。\n"
+        "5. 如果一个段落既有情境信息又有作答要求，它属于 question。\n"
+        "6. 如果文档没有独立材料段，material 必须为空字符串。\n"
+        "7. 保留题干关键限定条件，不要改写题目含义。\n"
+        "8. 不要把参考答案、评分标准、页眉页脚当成题目。\n\n"
         "Word 段落：\n"
         + "\n".join(f"{index + 1}. {paragraph}" for index, paragraph in enumerate(paragraphs))
     )
@@ -102,7 +105,7 @@ def _parse_titled_groups(paragraphs: List[str]) -> List[ParsedQuestion]:
         questions = []
         pending_question = False
 
-    for paragraph in paragraphs:
+    for index, paragraph in enumerate(paragraphs):
         if _looks_like_title(paragraph):
             flush()
             current_title = _strip_title_prefix(paragraph)
@@ -125,7 +128,7 @@ def _parse_titled_groups(paragraphs: List[str]) -> List[ParsedQuestion]:
             pending_question = False
             continue
 
-        if _looks_like_question(paragraph):
+        if _starts_new_question(paragraph) or (not questions and _looks_like_question(paragraph)):
             questions.append(_strip_question_prefix(paragraph))
             continue
 
@@ -133,8 +136,10 @@ def _parse_titled_groups(paragraphs: List[str]) -> List[ParsedQuestion]:
             questions[-1] = f"{questions[-1]}\n{paragraph}"
         elif materials:
             materials[-1] = f"{materials[-1]}\n{paragraph}"
-        else:
+        elif _looks_like_context_material(paragraph, following_paragraphs=paragraphs[index + 1 :]):
             materials.append(paragraph)
+        else:
+            questions.append(_strip_question_prefix(paragraph))
 
     flush()
     return groups
@@ -145,7 +150,7 @@ def _parse_legacy_questions(paragraphs: List[str]) -> List[ParsedQuestion]:
     material_buffer: List[str] = []
     current_material: Optional[str] = None
 
-    for paragraph in paragraphs:
+    for index, paragraph in enumerate(paragraphs):
         if _looks_like_material(paragraph):
             material_buffer.append(_strip_section_prefix(paragraph))
             current_material = "\n".join(material_buffer)
@@ -156,7 +161,7 @@ def _parse_legacy_questions(paragraphs: List[str]) -> List[ParsedQuestion]:
             material_buffer = []
             continue
 
-        if material_buffer:
+        if material_buffer or _looks_like_context_material(paragraph, following_paragraphs=paragraphs[index + 1 :]):
             material_buffer.append(paragraph)
             current_material = "\n".join(material_buffer)
 
@@ -176,17 +181,43 @@ def _looks_like_title(text: str) -> bool:
 
 
 def _looks_like_material(text: str) -> bool:
-    prefix = text[:16]
-    return any(marker in prefix for marker in MATERIAL_MARKERS) and not _looks_like_question(text)
+    return _has_explicit_material_marker(text) and not _looks_like_question(text)
 
 
 def _looks_like_question(text: str) -> bool:
+    if _has_explicit_material_marker(text):
+        return False
+    if re.match(r"^\s*(?:\d+\s*[、.．)]\s*)?[（(]\s*(?:论述题|论证题)\s*[)）]", text.strip()):
+        return True
     stripped = _strip_question_prefix(text)
     if stripped.endswith(("？", "?")):
         return True
     if any(stripped.startswith(marker) for marker in QUESTION_MARKERS):
         return True
-    return bool(re.match(r"^(问题|题目)\s*\d+", text.strip()))
+    if bool(re.match(r"^(问题|题目)\s*\d+", text.strip())):
+        return True
+    return False
+
+
+def _starts_new_question(text: str) -> bool:
+    stripped = text.strip()
+    return bool(
+        re.match(r"^(问题|题目)\s*\d+\s*[：:、.]?", stripped)
+        or re.match(r"^\d+\s*[、.．)]\s*", stripped)
+        or re.match(r"^[（(]\s*(?:论述题|论证题)\s*[)）]", stripped)
+    )
+
+
+def _looks_like_context_material(text: str, *, following_paragraphs: List[str]) -> bool:
+    stripped = text.strip()
+    if not stripped or _looks_like_title(stripped) or _looks_like_question(stripped):
+        return False
+    return any(_looks_like_question(paragraph) for paragraph in following_paragraphs)
+
+
+def _has_explicit_material_marker(text: str) -> bool:
+    prefix = text.strip()[:16]
+    return any(marker in prefix for marker in MATERIAL_MARKERS)
 
 
 def _is_question_label(text: str) -> bool:
