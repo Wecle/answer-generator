@@ -1,6 +1,5 @@
 "use client";
 
-import { BadgeCheck, Download, FileUp, Play, Plus, RotateCw, Save, Settings } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { estimateAnswerWordRange, shouldPollJobStatus, type GenerationJobStatus } from "@answer-generator/shared";
 import { RUBRIC_COMPILING_STATUS } from "@/lib/job-status";
@@ -18,7 +17,16 @@ import {
   stopJobRequest,
   updateJobSettingsRequest
 } from "./dashboard/api";
-import { FieldError, LoadingLabel, MarkdownPreview, RepeatableFields } from "./dashboard/form-controls";
+import { DeleteJobConfirmModal, DocumentParseModal, QuestionModal, SettingsApplyModal, TaskSettingsModal } from "./dashboard/modals";
+import {
+  CurrentQuestionPanel,
+  DashboardHome,
+  DashboardSidebar,
+  EmptyQueueState,
+  JobToolbar,
+  QuestionQueue,
+  ResultPanel
+} from "./dashboard/sections";
 import {
   emptyQuestionForm,
   emptyTaskForm,
@@ -40,8 +48,6 @@ import {
   normalizeApiError,
   parseAnswerSections,
   parseBlocks,
-  statusClassName,
-  statusLabel,
   validateTaskForm
 } from "./dashboard/utils";
 
@@ -626,532 +632,144 @@ export function Dashboard() {
 
   return (
     <main className="shell">
-      <aside className="rail">
-        <div className="brand">
-          <span className="brand-mark">AG</span>
-          <span>Answer Generator</span>
-        </div>
-        <button className="button new-task-button" type="button" onClick={openCreateTaskModal}>
-          <Plus size={16} />
-          新增任务
-        </button>
-        <div className="saved-jobs">
-          <div className="saved-jobs-head">
-            <span>任务列表</span>
-            <button type="button" onClick={() => loadJobs()} disabled={loadingJobs}>
-              <RotateCw size={14} />
-            </button>
-          </div>
-          <div className="saved-jobs-list">
-            {savedJobs.length ? (
-              savedJobs.slice(0, 6).map((job) => {
-                const jobRunning = shouldPollJobStatus(job.status as GenerationJobStatus) || (job.id === activeJobId && hasActiveItemProcessing);
-                return (
-                  <button
-                    className={job.id === activeJobId ? "saved-job active" : "saved-job"}
-                    key={job.id}
-                    type="button"
-                    onClick={() => loadJobDetail(job.id)}
-                  >
-                    <strong>{job.title}</strong>
-                    <span className="saved-job-status">
-                      {jobRunning ? <span className="saved-job-spinner" aria-hidden="true" /> : null}
-                      <span>{statusLabel(job.status)} · {job.progress.progressPercent}%</span>
-                    </span>
-                    <span>{formatElapsed(job.startedAt, job.completedAt, jobRunning)}</span>
-                    <span className="saved-job-bar" aria-hidden="true">
-                      <i style={{ width: `${job.progress.progressPercent}%` }} />
-                    </span>
-                  </button>
-                );
-              })
-            ) : (
-              <span className="empty-list">{loadingJobs ? "加载中" : "暂无保存任务"}</span>
-            )}
-          </div>
-        </div>
-      </aside>
-
+      <DashboardSidebar
+        activeJobId={activeJobId}
+        hasActiveItemProcessing={hasActiveItemProcessing}
+        loadingJobs={loadingJobs}
+        savedJobs={savedJobs}
+        onCreateTask={openCreateTaskModal}
+        onRefreshJobs={() => void loadJobs()}
+        onSelectJob={(jobId) => void loadJobDetail(jobId)}
+      />
       <section className="workspace">
-        {activeJobId ? <div className="toolbar">
-          <div className="toolbar-copy">
-            <h2>{title}</h2>
-            {items.length > 0 || isRubricCompiling ? (
-              <div className="job-progress">
-                <div className="job-progress-head">
-                  <span>
-                    {isRubricCompiling
-                      ? "正在分析评分标准中"
-                      : jobProgress.activeItem
-                      ? `${jobProgress.activeItem.status === "reviewing" ? "当前正在审核" : "当前正在生成"}：${jobProgress.activeItem.title || `题目 ${jobProgress.activeIndex + 1}`}`
-                      : isPollingActiveJob
-                        ? "等待 Worker 接收任务"
-                        : statusLabel(activeJobStatus)}
-                  </span>
-                  <strong>{isRubricCompiling ? "准备中" : `${jobProgress.percent}%`}</strong>
-                </div>
-                <div className="job-progress-bar" aria-label={isRubricCompiling ? "评分标准分析中" : `任务进度 ${jobProgress.percent}%`}>
-                  <i style={{ width: isRubricCompiling ? "45%" : `${jobProgress.percent}%` }} />
-                </div>
-                <div className="job-progress-meta">
-                  {isRubricCompiling ? (
-                    <span>分析完成后可上传 Word、新增题目或修改设置</span>
-                  ) : (
-                    <>
-                      <span>已处理 {jobProgress.completed}/{jobProgress.total}</span>
-                      <span>已通过 {jobProgress.passed}</span>
-                      <span>待人工 {jobProgress.needsReview}</span>
-                      <span>耗时 {elapsedLabel}</span>
-                    </>
-                  )}
-                </div>
-              </div>
-            ) : null}
-          </div>
-          <div className="top-actions">
-            {!isEditingLocked ? (
-              <button className="button secondary" type="button" onClick={openEditTaskModal}>
-                <Settings size={16} />
-                修改设置
-              </button>
-            ) : null}
-            <label className={isEditingLocked ? "button secondary disabled" : "button secondary"} aria-disabled={isEditingLocked}>
-              <FileUp size={16} />
-              上传 Word
-              <input
-                hidden
-                type="file"
-                accept=".docx"
-                disabled={isEditingLocked}
-                onChange={(event) => {
-                  handleDocumentFile(event.target.files?.[0] ?? null);
-                  event.currentTarget.value = "";
-                }}
-              />
-            </label>
-            <button className="button secondary" type="button" onClick={() => setQuestionModalOpen(true)} disabled={isEditingLocked}>
-              <Plus size={16} />
-              新增题目
-            </button>
-            {items.length > 0 ? (
-              <>
-                {canRestartJob ? (
-                  <button className="button" type="button" onClick={runSavedJob}>
-                    <Play size={16} />
-                    {restartJobLabel}
-                  </button>
-                ) : null}
-                {shouldPollActiveJob ? (
-                  <button className="button secondary" type="button" onClick={stopJob}>
-                    <RotateCw size={16} />
-                    停止
-                  </button>
-                ) : null}
-                <button className="button secondary danger-action" type="button" onClick={() => setDeleteJobConfirmOpen(true)}>
-                  删除
-                </button>
-                <a className="button secondary" href={`/api/jobs/${activeJobId}/export`}>
-                  <Download size={16} />
-                  导出结果
-                </a>
-              </>
-            ) : null}
-          </div>
-        </div> : null}
+        {activeJobId ? (
+          <JobToolbar
+            activeJobId={activeJobId}
+            activeJobStatus={activeJobStatus}
+            canRestartJob={canRestartJob}
+            elapsedLabel={elapsedLabel}
+            isEditingLocked={isEditingLocked}
+            isPollingActiveJob={isPollingActiveJob}
+            isRubricCompiling={isRubricCompiling}
+            itemCount={items.length}
+            jobProgress={jobProgress}
+            restartJobLabel={restartJobLabel}
+            shouldPollActiveJob={shouldPollActiveJob}
+            title={title}
+            onDeleteJob={() => setDeleteJobConfirmOpen(true)}
+            onEditTask={openEditTaskModal}
+            onOpenQuestionModal={() => setQuestionModalOpen(true)}
+            onRunJob={runSavedJob}
+            onStopJob={stopJob}
+            onUploadWord={handleDocumentFile}
+          />
+        ) : null}
 
         {error ? <div className="error">{error}</div> : null}
 
         {!activeJobId ? (
-          <section className="dashboard-home">
-            <div className="panel-title">
-              <h3>仪表盘</h3>
-              <span>任务概览</span>
-            </div>
-            <div className="dashboard-cards">
-              <div className="dashboard-card">
-                <strong>{dashboardStats.totalTasks}</strong>
-                <span>任务总数</span>
-              </div>
-              <div className="dashboard-card">
-                <strong>{dashboardStats.totalItems}</strong>
-                <span>题目总数</span>
-              </div>
-              <div className="dashboard-card">
-                <strong>{dashboardStats.reviewedItems}</strong>
-                <span>审核总数</span>
-              </div>
-              <div className="dashboard-card">
-                <strong>{dashboardStats.passedItems}</strong>
-                <span>审核成功</span>
-              </div>
-              <div className="dashboard-card">
-                <strong>{dashboardStats.completedTasks}</strong>
-                <span>已完成任务</span>
-              </div>
-              <div className="dashboard-card">
-                <strong>{dashboardStats.failedItems}</strong>
-                <span>失败题目</span>
-              </div>
-              <div className="dashboard-card">
-                <strong>{dashboardStats.needsReviewItems}</strong>
-                <span>待人工处理</span>
-              </div>
-              <div className="dashboard-card wide">
-                <strong>{dashboardStats.successRate}%</strong>
-                <span>审核成功率</span>
-              </div>
-            </div>
-          </section>
+          <DashboardHome stats={dashboardStats} />
         ) : (
-        <>
-        {items.length > 0 ? <div className={selected ? "task-layout" : "task-layout queue-only"}>
-          <section className="panel queue-panel">
-            <div className="panel-title">
-              <h3>题目队列</h3>
-              <div className="queue-title-actions">
-                <span>{shouldPollActiveJob ? "自动刷新中" : `${items.length} 题`}</span>
-                <button className="button secondary small" type="button" onClick={() => setQuestionModalOpen(true)} disabled={isEditingLocked}>
-                  <Plus size={14} />
-                  新增题目
-                </button>
-              </div>
+          items.length > 0 ? (
+            <div className={selected ? "task-layout" : "task-layout queue-only"}>
+              <QuestionQueue
+                isEditingLocked={isEditingLocked}
+                items={items}
+                selectedId={selected?.id ?? ""}
+                shouldPollActiveJob={shouldPollActiveJob}
+                onAddQuestion={() => setQuestionModalOpen(true)}
+                onSelectItem={(itemId) => {
+                  setSelectedId(itemId);
+                  setResult(null);
+                }}
+              />
+              {selected ? (
+                <CurrentQuestionPanel
+                  form={selectedForm}
+                  isEditingLocked={isEditingLocked}
+                  savingItem={savingItem}
+                  selected={selected}
+                  wordRange={wordRange}
+                  onDelete={deleteSelectedItem}
+                  onMaterialChange={updateSelectedMaterials}
+                  onQuestionChange={updateSelectedQuestions}
+                  onSave={saveSelectedItem}
+                  onTitleChange={(nextTitle) => updateSelected({ title: nextTitle })}
+                />
+              ) : null}
+              {selected ? (
+                <ResultPanel
+                  answerSections={answerSections}
+                  result={result}
+                  retryFeedbackAttempts={retryFeedbackAttempts}
+                  selected={selected}
+                  selectedLatestReview={selectedLatestReview}
+                  visibleResult={visibleResult}
+                />
+              ) : null}
             </div>
-            <div className="items">
-              {items.map((item, index) => (
-                <button
-                  className={item.id === selected?.id ? "item active" : "item"}
-                  key={item.id}
-                  type="button"
-                  onClick={() => {
-                    setSelectedId(item.id);
-                    setResult(null);
-                  }}
-                >
-                  <div className="item-head">
-                    <strong>{item.title || `题目 ${index + 1}`}</strong>
-                    <span className={statusClassName(item.status)}>{item.id === selected?.id ? (isEditingLocked ? "查看中" : "编辑中") : statusLabel(item.status ?? "pending")}</span>
-                  </div>
-                  <span className="item-copy">{item.question || "空题目"}</span>
-                  <span className="item-meta">
-                    {item.finalScore === null || item.finalScore === undefined ? "未评分" : `${item.finalScore} 分`}
-                    {" · "}
-                    {item.attempts?.length ?? 0} 次尝试
-                  </span>
-                </button>
-              ))}
-            </div>
-          </section>
-          {selected ? <section className="panel active-question-panel" key={selected.id}>
-            <div className="panel-title">
-              <h3>当前题目</h3>
-              <span>{isEditingLocked ? "生成中只读" : `${wordRange.minWords}-${wordRange.maxWords} 字`}</span>
-            </div>
-            <div className="field">
-              <label htmlFor="question-title">题目名称</label>
-              <input id="question-title" value={selected.title} disabled={isEditingLocked} onChange={(event) => updateSelected({ title: event.target.value })} />
-            </div>
-            <RepeatableFields
-              label="材料"
-              values={selectedForm?.materials ?? [""]}
-              onChange={updateSelectedMaterials}
-              disabled={isEditingLocked}
-            />
-            <RepeatableFields
-              label="问题"
-              values={selectedForm?.questions ?? [""]}
-              onChange={updateSelectedQuestions}
-              disabled={isEditingLocked}
-            />
-            <div className="actions item-actions">
-              <button className="button secondary" type="button" onClick={saveSelectedItem} disabled={savingItem || isEditingLocked}>
-                <Save size={16} />
-                {savingItem ? "保存中" : "保存题目"}
-              </button>
-              <button className="button secondary danger-action" type="button" onClick={deleteSelectedItem} disabled={isEditingLocked}>
-                删除题目
-              </button>
-            </div>
-          </section> : null}
-
-          {selected ? <section className="panel active-question-panel result-panel" key={`${selected.id}-result`}>
-            <div className="panel-title">
-              <h3>生成结果</h3>
-              <span>{statusLabel(selected?.status ?? (result ? result.status : "pending"))}</span>
-            </div>
-            {visibleResult ? (
-              <>
-                <div className="result-sections">
-                  {answerSections.map((section, index) => (
-                    <article className="result-section" key={`${section.title}-${index}`}>
-                      <div className="result-section-head">
-                        <span>{section.title}</span>
-                      </div>
-                      <div className="result">{section.body}</div>
-                    </article>
-                  ))}
-                </div>
-                <div className="review">
-                  <div className="review-box">
-                    <strong>{visibleResult.final_score}</strong>
-                    <span>最终得分</span>
-                  </div>
-                  <div className="review-box">
-                    <strong>{visibleResult.attempts.length}</strong>
-                    <span>尝试次数</span>
-                  </div>
-                  <div className="review-box">
-                    <strong className="review-status">
-                      {visibleResult.status === "passed" ? <BadgeCheck size={22} /> : <RotateCw size={22} />}
-                      {visibleResult.status === "passed" ? "通过" : "人工处理"}
-                    </strong>
-                    <span>审核状态</span>
-                  </div>
-                </div>
-                {retryFeedbackAttempts.length > 0 ? (
-                  <div className="retry-notes">
-                    <h4>重试意见</h4>
-                    {retryFeedbackAttempts.map((attempt) => (
-                      <div className="retry-note" key={attempt.attempt_number}>
-                        <div className="retry-note-head">
-                          <strong>第 {attempt.attempt_number} 轮</strong>
-                          <span>{attempt.review.total_score} 分</span>
-                        </div>
-                        <div className="retry-note-reasons">
-                          {attempt.review.reasons?.map((reason) => (
-                            <p key={reason}>{reason}</p>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-                {selectedLatestReview?.dimensions.length ? (
-                  <div className="dimensions">
-                    {selectedLatestReview.dimensions.map((dimension) => (
-                      <div className="dimension" key={dimension.name}>
-                        <span>{dimension.name}</span>
-                        <strong>
-                          {dimension.score}/{dimension.maxScore}
-                        </strong>
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-              </>
-            ) : (
-              <div className="result empty">自动审核完成后显示结果。</div>
-            )}
-          </section> : null}
-        </div> : (
-          <section className="empty-queue-state">
-            <span>{isRubricCompiling ? "正在分析评分标准中" : "题目队列为空"}</span>
-            <p>{isRubricCompiling ? "系统正在整合评分标准和生成提示词，完成后即可上传 Word 或新增题目。" : "等待导入题目材料，生成流程会在题目加入后开始准备。"}</p>
-          </section>
-        )}
-        </>
+          ) : (
+            <EmptyQueueState isRubricCompiling={isRubricCompiling} />
+          )
         )}
       </section>
       {taskModalOpen ? (
-        <div className="modal-backdrop">
-          <section className="modal">
-            <div className="panel-title">
-              <h3>新增任务</h3>
-              <button className="icon-button" type="button" onClick={() => setTaskModalOpen(false)}>×</button>
-            </div>
-            <div className="field">
-              <label htmlFor="task-title">任务名称</label>
-              <input id="task-title" value={taskForm.title} aria-invalid={Boolean(taskFormErrors.title)} onChange={(event) => updateTaskFormField("title", event.target.value)} />
-              <FieldError message={taskFormErrors.title} />
-            </div>
-            <div className="field">
-              <label htmlFor="task-rubric">评分标准</label>
-              <textarea id="task-rubric" value={taskForm.rubric} aria-invalid={Boolean(taskFormErrors.rubric)} onChange={(event) => updateTaskFormField("rubric", event.target.value)} />
-              <FieldError message={taskFormErrors.rubric} />
-            </div>
-            <div className="rubric-preview">
-              <div className="rubric-preview-head">评分标准预览</div>
-              <MarkdownPreview value={taskForm.rubric} />
-            </div>
-            <div className="split">
-              <div className="field">
-                <label htmlFor="task-minutes">答题时间</label>
-                <input id="task-minutes" type="number" min="1" step="0.5" value={taskForm.answerMinutes} aria-invalid={Boolean(taskFormErrors.answerMinutes)} onChange={(event) => updateTaskFormField("answerMinutes", event.target.value)} />
-                <FieldError message={taskFormErrors.answerMinutes} />
-              </div>
-              <div className="field">
-                <label htmlFor="task-score">通过分数</label>
-                <input id="task-score" type="number" min="0" max="100" value={taskForm.passingScore} aria-invalid={Boolean(taskFormErrors.passingScore)} onChange={(event) => updateTaskFormField("passingScore", event.target.value)} />
-                <FieldError message={taskFormErrors.passingScore} />
-              </div>
-            </div>
-            <div className="field">
-              <label htmlFor="task-attempts">重试次数</label>
-              <input id="task-attempts" type="number" min="1" max="10" value={taskForm.maxAttempts} aria-invalid={Boolean(taskFormErrors.maxAttempts)} onChange={(event) => updateTaskFormField("maxAttempts", event.target.value)} />
-              <FieldError message={taskFormErrors.maxAttempts} />
-            </div>
-            <div className="actions">
-              <button className="button" type="button" onClick={createJob} disabled={saving}>
-                <LoadingLabel loading={savingAction === "create_task"} loadingText="创建中" text="创建任务" />
-              </button>
-              <button className="button secondary" type="button" onClick={() => setTaskModalOpen(false)}>取消</button>
-            </div>
-          </section>
-        </div>
+        <TaskSettingsModal
+          errors={taskFormErrors}
+          form={taskForm}
+          saving={saving}
+          savingAction={savingAction}
+          submitLabel="创建任务"
+          submitLoadingText="创建中"
+          title="新增任务"
+          onClose={() => setTaskModalOpen(false)}
+          onFieldChange={updateTaskFormField}
+          onSubmit={createJob}
+        />
       ) : null}
       {editTaskModalOpen ? (
-        <div className="modal-backdrop">
-          <section className="modal">
-            <div className="panel-title">
-              <h3>修改任务设置</h3>
-              <button className="icon-button" type="button" onClick={() => setEditTaskModalOpen(false)}>×</button>
-            </div>
-            <div className="field">
-              <label htmlFor="edit-task-title">任务名称</label>
-              <input id="edit-task-title" value={taskForm.title} aria-invalid={Boolean(taskFormErrors.title)} onChange={(event) => updateTaskFormField("title", event.target.value)} />
-              <FieldError message={taskFormErrors.title} />
-            </div>
-            <div className="field">
-              <label htmlFor="edit-task-rubric">评分标准</label>
-              <textarea id="edit-task-rubric" value={taskForm.rubric} aria-invalid={Boolean(taskFormErrors.rubric)} onChange={(event) => updateTaskFormField("rubric", event.target.value)} />
-              <FieldError message={taskFormErrors.rubric} />
-            </div>
-            <div className="rubric-preview">
-              <div className="rubric-preview-head">评分标准预览</div>
-              <MarkdownPreview value={taskForm.rubric} />
-            </div>
-            <div className="split">
-              <div className="field">
-                <label htmlFor="edit-task-minutes">答题时间</label>
-                <input id="edit-task-minutes" type="number" min="1" step="0.5" value={taskForm.answerMinutes} aria-invalid={Boolean(taskFormErrors.answerMinutes)} onChange={(event) => updateTaskFormField("answerMinutes", event.target.value)} />
-                <FieldError message={taskFormErrors.answerMinutes} />
-              </div>
-              <div className="field">
-                <label htmlFor="edit-task-score">通过分数</label>
-                <input id="edit-task-score" type="number" min="0" max="100" value={taskForm.passingScore} aria-invalid={Boolean(taskFormErrors.passingScore)} onChange={(event) => updateTaskFormField("passingScore", event.target.value)} />
-                <FieldError message={taskFormErrors.passingScore} />
-              </div>
-            </div>
-            <div className="field">
-              <label htmlFor="edit-task-attempts">重试次数</label>
-              <input id="edit-task-attempts" type="number" min="1" max="10" value={taskForm.maxAttempts} aria-invalid={Boolean(taskFormErrors.maxAttempts)} onChange={(event) => updateTaskFormField("maxAttempts", event.target.value)} />
-              <FieldError message={taskFormErrors.maxAttempts} />
-            </div>
-            <div className="actions">
-              <button className="button" type="button" onClick={requestUpdateJobSettings}>确认修改</button>
-              <button className="button secondary" type="button" onClick={() => setEditTaskModalOpen(false)}>取消</button>
-            </div>
-          </section>
-        </div>
+        <TaskSettingsModal
+          errors={taskFormErrors}
+          form={taskForm}
+          submitLabel="确认修改"
+          title="修改任务设置"
+          onClose={() => setEditTaskModalOpen(false)}
+          onFieldChange={updateTaskFormField}
+          onSubmit={requestUpdateJobSettings}
+        />
       ) : null}
       {settingsApplyModalOpen ? (
-        <div className="modal-backdrop">
-          <section className="modal confirm-modal settings-confirm-modal">
-            <div className="panel-title">
-              <h3>应用新设置</h3>
-              <button className="icon-button" type="button" onClick={() => setSettingsApplyModalOpen(false)}>×</button>
-            </div>
-            <p className="confirm-copy">请选择新设置的应用范围。重新生成会清空所有题目的生成结果和审核记录。</p>
-            <div className="settings-confirm-actions">
-              <button className="button danger-button" type="button" onClick={() => updateJobSettings("regenerate_all")} disabled={saving}>
-                <LoadingLabel loading={savingAction === "regenerate_all"} loadingText="处理中" text="全部题目重新生成" />
-              </button>
-              <button className="button secondary" type="button" onClick={() => updateJobSettings("future_only")} disabled={saving}>
-                <LoadingLabel loading={savingAction === "future_only"} loadingText="处理中" text="仅未生成题目使用新设置" />
-              </button>
-              <button className="button secondary" type="button" onClick={() => setSettingsApplyModalOpen(false)} disabled={saving}>
-                取消
-              </button>
-            </div>
-          </section>
-        </div>
+        <SettingsApplyModal
+          saving={saving}
+          savingAction={savingAction}
+          onApply={updateJobSettings}
+          onClose={() => setSettingsApplyModalOpen(false)}
+        />
       ) : null}
       {documentParseModalOpen ? (
-        <div className="modal-backdrop">
-          <section className="modal confirm-modal document-parse-modal">
-            <div className="panel-title">
-              <h3>选择解析方式</h3>
-              <button
-                className="icon-button"
-                type="button"
-                onClick={() => {
-                  if (parsingDocumentMode) return;
-                  setDocumentParseModalOpen(false);
-                  setPendingDocumentFile(null);
-                }}
-              >
-                ×
-              </button>
-            </div>
-            <p className="confirm-copy">
-              {pendingDocumentFile?.name ?? "Word 文档"} 已选择。普通解析适合格式规整的文档，AI 解析适合题目、材料和问题排版差异较大的文档。
-            </p>
-            {documentParseError ? <p className="modal-error">{documentParseError}</p> : null}
-            <div className="settings-confirm-actions">
-              <button className="button" type="button" onClick={() => parseDocument("rules")} disabled={Boolean(parsingDocumentMode)}>
-                <LoadingLabel loading={parsingDocumentMode === "rules"} loadingText="解析中" text="普通解析" />
-              </button>
-              <button className="button secondary" type="button" onClick={() => parseDocument("ai")} disabled={Boolean(parsingDocumentMode)}>
-                <LoadingLabel loading={parsingDocumentMode === "ai"} loadingText="解析中" text="AI 解析" />
-              </button>
-              <button
-                className="button secondary"
-                type="button"
-                onClick={() => {
-                  setDocumentParseModalOpen(false);
-                  setPendingDocumentFile(null);
-                }}
-                disabled={Boolean(parsingDocumentMode)}
-              >
-                取消
-              </button>
-            </div>
-          </section>
-        </div>
+        <DocumentParseModal
+          error={documentParseError}
+          fileName={pendingDocumentFile?.name}
+          parsingMode={parsingDocumentMode}
+          onClose={() => {
+            if (parsingDocumentMode) return;
+            setDocumentParseModalOpen(false);
+            setPendingDocumentFile(null);
+          }}
+          onParse={parseDocument}
+        />
       ) : null}
       {questionModalOpen ? (
-        <div className="modal-backdrop">
-          <section className="modal">
-            <div className="panel-title">
-              <h3>新增题目</h3>
-              <button className="icon-button" type="button" onClick={() => setQuestionModalOpen(false)}>×</button>
-            </div>
-            <div className="field">
-              <label htmlFor="new-question-title">题目名称</label>
-              <input id="new-question-title" value={questionForm.title} disabled={isEditingLocked} onChange={(event) => setQuestionForm({ ...questionForm, title: event.target.value })} />
-            </div>
-            <RepeatableFields
-              label="材料"
-              values={questionForm.materials}
-              onChange={(materials) => setQuestionForm((current) => ({ ...current, materials }))}
-              disabled={isEditingLocked}
-            />
-            <RepeatableFields
-              label="问题"
-              values={questionForm.questions}
-              onChange={(questions) => setQuestionForm((current) => ({ ...current, questions }))}
-              disabled={isEditingLocked}
-            />
-            <div className="actions">
-              <button className="button" type="button" onClick={addQuestionFromModal} disabled={isEditingLocked}>添加题目</button>
-              <button className="button secondary" type="button" onClick={() => setQuestionModalOpen(false)}>取消</button>
-            </div>
-          </section>
-        </div>
+        <QuestionModal
+          form={questionForm}
+          isEditingLocked={isEditingLocked}
+          onClose={() => setQuestionModalOpen(false)}
+          onFormChange={setQuestionForm}
+          onSubmit={addQuestionFromModal}
+        />
       ) : null}
       {deleteJobConfirmOpen ? (
-        <div className="modal-backdrop">
-          <section className="modal confirm-modal">
-            <div className="panel-title">
-              <h3>删除任务</h3>
-              <button className="icon-button" type="button" onClick={() => setDeleteJobConfirmOpen(false)}>×</button>
-            </div>
-            <p className="confirm-copy">删除后会同时移除该任务下的题目、生成尝试和审核结果。</p>
-            <div className="actions">
-              <button className="button secondary danger-action" type="button" onClick={deleteJob}>确认删除</button>
-              <button className="button" type="button" onClick={() => setDeleteJobConfirmOpen(false)}>取消</button>
-            </div>
-          </section>
-        </div>
+        <DeleteJobConfirmModal onClose={() => setDeleteJobConfirmOpen(false)} onConfirm={deleteJob} />
       ) : null}
     </main>
   );

@@ -44,6 +44,33 @@ export interface QuestionFormState {
   questions: string[];
 }
 
+export interface DashboardStats {
+  totalTasks: number;
+  completedTasks: number;
+  totalItems: number;
+  passedItems: number;
+  failedItems: number;
+  needsReviewItems: number;
+  reviewedItems: number;
+  successRate: number;
+}
+
+export interface JobProgressView {
+  activeIndex: number;
+  activeItem: QuestionItem | null;
+  completed: number;
+  needsReview: number;
+  passed: number;
+  percent: number;
+  processing: number;
+  total: number;
+}
+
+export interface AnswerSection {
+  title: string;
+  body: string;
+}
+
 export type TaskFormErrors = Partial<Record<keyof TaskFormState, string>>;
 export type SavingAction = "create_task" | "regenerate_all" | "future_only";
 export type DocumentParseMode = "rules" | "ai";
