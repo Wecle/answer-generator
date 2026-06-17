@@ -8,6 +8,7 @@ import {
 import { estimateAnswerWordRange, summarizeJobProgress, type GenerationItemStatus } from "@answer-generator/shared";
 import { eq, inArray } from "drizzle-orm";
 import { z } from "zod";
+import { RUBRIC_COMPILING_STATUS } from "@/lib/job-status";
 import { resetJobResults, updatePendingItemTargets } from "@/lib/job-reset";
 import { compileRubricLocally } from "@/lib/rubric-compiler";
 
@@ -93,7 +94,7 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
       answerMinutes: String(input.answerMinutes),
       passingScore: input.passingScore,
       maxAttempts: input.maxAttempts,
-      status: "compiling_rubric",
+      status: RUBRIC_COMPILING_STATUS,
       updatedAt: new Date()
     })
     .where(eq(answerGenerationJobs.id, id))

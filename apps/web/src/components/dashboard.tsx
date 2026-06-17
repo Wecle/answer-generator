@@ -2,99 +2,48 @@
 
 import { BadgeCheck, Download, FileUp, Play, Plus, RotateCw, Save, Settings } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { estimateAnswerWordRange, shouldPollJobStatus, type GenerationJobStatus } from "@answer-generator/shared";
-
-interface QuestionItem {
-  id: string;
-  title: string;
-  material: string;
-  question: string;
-  status?: string;
-  finalAnswer?: string | null;
-  finalScore?: number | null;
-  attempts?: Array<{
-    attemptNumber: number;
-    review: {
-      totalScore: number;
-      passed: boolean;
-      reasons: string[];
-      dimensions: Array<{ name: string; score: number; maxScore: number }>;
-    } | null;
-  }>;
-}
-
-interface ItemFormState {
-  materials: string[];
-  questions: string[];
-}
-
-interface TaskFormState {
-  title: string;
-  rubric: string;
-  answerMinutes: string;
-  passingScore: string;
-  maxAttempts: string;
-}
-
-type TaskFormErrors = Partial<Record<keyof TaskFormState, string>>;
-type SavingAction = "create_task" | "regenerate_all" | "future_only";
-type DocumentParseMode = "rules" | "ai";
-
-interface JobSummary {
-  id: string;
-  title: string;
-  status: string;
-  startedAt?: string | null;
-  completedAt?: string | null;
-  updatedAt?: string | null;
-  progress: {
-    totalItems: number;
-    passedItems: number;
-    needsReviewItems: number;
-    failedItems: number;
-    progressPercent: number;
-  };
-}
-
-interface RunResponse {
-  status: "passed" | "needs_review";
-  final_answer: string;
-  final_score: number;
-  reasons: string[];
-  attempts: Array<{
-    attempt_number: number;
-    review: {
-      total_score: number;
-      passed: boolean;
-      reasons?: string[];
-    };
-  }>;
-}
-
-const initialItems: QuestionItem[] = [
-  {
-    id: "item-1",
-    title: "政务服务质量提升",
-    material: "某地推进政务服务改革，群众办事效率明显提升，但跨部门协同和数据共享仍有短板。",
-    question: "请谈谈如何进一步提升政务服务质量？"
-  }
-];
-
-const emptyTaskForm = {
-  title: "",
-  rubric: "",
-  answerMinutes: "",
-  passingScore: "",
-  maxAttempts: ""
-} satisfies TaskFormState;
-
-const emptyQuestionForm = {
-  title: "",
-  materials: [""],
-  questions: [""]
-};
+import { RUBRIC_COMPILING_STATUS } from "@/lib/job-status";
+import {
+  analyzeRubricRequest,
+  appendItemsRequest,
+  createJobRequest,
+  deleteItemRequest,
+  deleteJobRequest,
+  loadJobDetailRequest,
+  loadJobsRequest,
+  parseDocumentRequest,
+  runJobRequest,
+  saveItemRequest,
+  stopJobRequest,
+  updateJobSettingsRequest
+} from "./dashboard/api";
+import { FieldError, LoadingLabel, MarkdownPreview, RepeatableFields } from "./dashboard/form-controls";
+import {
+  emptyQuestionForm,
+  emptyTaskForm,
+  type DocumentParseMode,
+  type ItemFormState,
+  type JobSummary,
+  type ParsedQuestionInput,
+  type QuestionItem,
+  type RunResponse,
+  type SavingAction,
+  type TaskFormErrors,
+  type TaskFormState
+} from "./dashboard/types";
+import {
+  formatBlock,
+  formatBlocks,
+  formatElapsed,
+  latestReviewReasons,
+  normalizeApiError,
+  parseAnswerSections,
+  parseBlocks,
+  statusClassName,
+  statusLabel,
+  validateTaskForm
+} from "./dashboard/utils";
 
 export function Dashboard() {
   const [title, setTitle] = useState("6 月面试答案生成任务");
@@ -205,7 +154,7 @@ export function Dashboard() {
   const isPollingActiveJob = shouldPollJobStatus(activeJobStatus);
   const hasActiveItemProcessing = jobProgress.processing > 0;
   const shouldPollActiveJob = isPollingActiveJob || hasActiveItemProcessing;
-  const isRubricCompiling = activeJobStatus === "compiling_rubric";
+  const isRubricCompiling = activeJobStatus === RUBRIC_COMPILING_STATUS;
   const isEditingLocked = shouldPollActiveJob;
   const lockedEditMessage = isRubricCompiling ? "正在分析评分标准，完成后可继续操作" : "生成中暂不允许新增或修改题目";
   const canRestartJob = items.length > 0 && !isEditingLocked && activeJobStatus !== "completed";
@@ -232,7 +181,7 @@ export function Dashboard() {
   }, [activeJobId, shouldPollActiveJob]);
 
   useEffect(() => {
-    if (!activeJobId || activeJobStatus !== "compiling_rubric") {
+    if (!activeJobId || activeJobStatus !== RUBRIC_COMPILING_STATUS) {
       return;
     }
 
@@ -335,17 +284,9 @@ export function Dashboard() {
     setSaving(true);
     setSavingAction("create_task");
     try {
-      const response = await fetch("/api/jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...input, items: [] })
-      });
-      if (!response.ok) {
-        throw new Error(await response.text());
-      }
-      const payload = (await response.json()) as { jobId: string };
+      const payload = await createJobRequest(input);
       setActiveJobId(payload.jobId);
-      setActiveJobStatus("compiling_rubric");
+      setActiveJobStatus(RUBRIC_COMPILING_STATUS);
       setTitle(input.title);
       setRubric(input.rubric);
       setAnswerMinutes(input.answerMinutes);
@@ -373,18 +314,13 @@ export function Dashboard() {
 
     compilingRubricRequests.current.add(jobId);
     try {
-      const response = await fetch(`/api/jobs/${jobId}/compile-rubric`, { method: "POST" });
-      if (!response.ok) {
-        setError(normalizeApiError(await response.text()));
-        return;
-      }
-
+      await analyzeRubricRequest(jobId);
       await loadJobs({ silent: true });
       if (jobId === activeJobId || !activeJobId) {
         await loadJobDetail(jobId, { preserveSelection: true, silent: true });
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "评分标准分析失败");
+      setError(err instanceof Error ? normalizeApiError(err.message) : "评分标准分析失败");
     } finally {
       compilingRubricRequests.current.delete(jobId);
     }
@@ -416,16 +352,7 @@ export function Dashboard() {
     setSaving(true);
     setSavingAction(applyMode);
     try {
-      const response = await fetch(`/api/jobs/${activeJobId}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...input, applyMode })
-      });
-
-      if (!response.ok) {
-        throw new Error(await response.text());
-      }
-
+      await updateJobSettingsRequest(activeJobId, input, applyMode);
       setTitle(input.title);
       setRubric(input.rubric);
       setAnswerMinutes(input.answerMinutes);
@@ -466,22 +393,10 @@ export function Dashboard() {
       setDocumentParseError(lockedEditMessage);
       return;
     }
-    const form = new FormData();
-    form.append("file", pendingDocumentFile);
-    form.append("mode", mode);
     setParsingDocumentMode(mode);
     setDocumentParseError(null);
     try {
-      const response = await fetch("/api/documents/parse", { method: "POST", body: form });
-      if (!response.ok) {
-        throw new Error(await response.text());
-      }
-      const payload = (await response.json()) as { questions: Array<{ title?: string | null; material?: string | null; question: string }> };
-      const parsed = payload.questions.map((question, index) => ({
-        title: question.title?.trim() || `Word 题目 ${index + 1}`,
-        material: question.material ?? "",
-        question: question.question
-      }));
+      const parsed = await parseDocumentRequest(pendingDocumentFile, mode);
       if (parsed.length > 0) {
         await appendItems(parsed);
         setResult(null);
@@ -495,7 +410,7 @@ export function Dashboard() {
     }
   }
 
-  async function appendItems(nextItems: Array<{ title: string; material: string; question: string }>, options?: { focusNewItem?: boolean }) {
+  async function appendItems(nextItems: ParsedQuestionInput[], options?: { focusNewItem?: boolean }) {
     if (!activeJobId) {
       setError("请先新增任务");
       return;
@@ -505,18 +420,13 @@ export function Dashboard() {
       return;
     }
 
-    const response = await fetch(`/api/jobs/${activeJobId}/items`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items: nextItems })
-    });
-
-    if (!response.ok) {
-      setError(await response.text());
+    let payload;
+    try {
+      payload = await appendItemsRequest(activeJobId, nextItems);
+    } catch (err) {
+      setError(err instanceof Error ? normalizeApiError(err.message) : "添加题目失败");
       return;
     }
-
-    const payload = (await response.json()) as { items: Array<{ id: string }> };
     await loadJobDetail(activeJobId, { focusItemId: options?.focusNewItem ? payload.items[0]?.id : undefined, preserveSelection: true });
     await loadJobs();
   }
@@ -550,12 +460,9 @@ export function Dashboard() {
       setLoadingJobs(true);
     }
     try {
-      const response = await fetch("/api/jobs");
-      if (!response.ok) {
-        return;
-      }
-      const payload = (await response.json()) as { jobs: JobSummary[] };
-      setSavedJobs(payload.jobs);
+      setSavedJobs(await loadJobsRequest());
+    } catch {
+      return;
     } finally {
       if (!options?.silent) {
         setLoadingJobs(false);
@@ -567,44 +474,15 @@ export function Dashboard() {
     if (!options?.silent) {
       setError(null);
     }
-    const response = await fetch(`/api/jobs/${jobId}`);
-    if (!response.ok) {
+    let payload;
+    try {
+      payload = await loadJobDetailRequest(jobId);
+    } catch (err) {
       if (!options?.silent) {
-        setError(await response.text());
+        setError(err instanceof Error ? err.message : "加载任务失败");
       }
       return;
     }
-    const payload = (await response.json()) as {
-      job: {
-        id: string;
-        title: string;
-        rubric: string;
-        answerMinutes: string;
-        passingScore: number;
-        maxAttempts: number;
-        status: GenerationJobStatus;
-        startedAt: string | null;
-        completedAt: string | null;
-      };
-      items: Array<{
-        id: string;
-        title: string;
-        material: string | null;
-        question: string;
-        status: string;
-        finalAnswer: string | null;
-        finalScore: number | null;
-        attempts: Array<{
-          attemptNumber: number;
-          review: {
-            totalScore: number;
-            passed: boolean;
-            reasons: string[];
-            dimensions: Array<{ name: string; score: number; maxScore: number }>;
-          } | null;
-        }>;
-      }>;
-    };
 
     setActiveJobId(payload.job.id);
     setActiveJobStatus(payload.job.status);
@@ -647,12 +525,13 @@ export function Dashboard() {
     }
 
     setError(null);
-    const response = await fetch(`/api/jobs/${activeJobId}/run`, { method: "POST" });
-    if (!response.ok) {
-      setError(await response.text());
+    let payload;
+    try {
+      payload = await runJobRequest(activeJobId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "启动任务失败");
       return;
     }
-    const payload = (await response.json()) as { workerOnline?: boolean };
     setEditTaskModalOpen(false);
     setSettingsApplyModalOpen(false);
     setQuestionModalOpen(false);
@@ -669,9 +548,10 @@ export function Dashboard() {
   async function stopJob() {
     if (!activeJobId) return;
     setError(null);
-    const response = await fetch(`/api/jobs/${activeJobId}/stop`, { method: "POST" });
-    if (!response.ok) {
-      setError(await response.text());
+    try {
+      await stopJobRequest(activeJobId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "停止任务失败");
       return;
     }
     setActiveJobStatus("cancelled");
@@ -682,9 +562,10 @@ export function Dashboard() {
   async function deleteJob() {
     if (!activeJobId) return;
     setError(null);
-    const response = await fetch(`/api/jobs/${activeJobId}`, { method: "DELETE" });
-    if (!response.ok) {
-      setError(await response.text());
+    try {
+      await deleteJobRequest(activeJobId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除任务失败");
       return;
     }
     setActiveJobId(null);
@@ -710,20 +591,7 @@ export function Dashboard() {
     setSavingItem(true);
     setError(null);
     try {
-      const response = await fetch(`/api/jobs/${activeJobId}/items/${selected.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: selected.title || "未命名题目",
-          material: selected.material,
-          question: selected.question
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error(await response.text());
-      }
-
+      await saveItemRequest(activeJobId, selected);
       await loadJobDetail(activeJobId, { preserveSelection: true });
       await loadJobs();
     } catch (err) {
@@ -740,9 +608,10 @@ export function Dashboard() {
       return;
     }
     setError(null);
-    const response = await fetch(`/api/jobs/${activeJobId}/items/${selected.id}`, { method: "DELETE" });
-    if (!response.ok) {
-      setError(await response.text());
+    try {
+      await deleteItemRequest(activeJobId, selected.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除题目失败");
       return;
     }
 
@@ -1286,227 +1155,4 @@ export function Dashboard() {
       ) : null}
     </main>
   );
-}
-
-function latestReviewReasons(item: QuestionItem) {
-  const reasons = item.attempts?.at(-1)?.review?.reasons ?? [];
-  if (reasons.length > 0) {
-    return reasons;
-  }
-
-  return item.status === "passed" ? ["该题已通过自动审核。"] : ["该题需要人工处理或继续重试。"];
-}
-
-function statusClassName(status = "pending") {
-  return status === "passed" ? "badge success" : status === "needs_review" || status === "failed" ? "badge danger" : "badge";
-}
-
-function formatBlock(label: string, value: string, index: number) {
-  const trimmed = value.trim();
-  return trimmed ? `${label} ${index + 1}\n${trimmed}` : "";
-}
-
-function formatBlocks(label: string, values: string[]) {
-  return values.map((value, index) => formatBlock(label, value, index)).filter(Boolean).join("\n\n");
-}
-
-function parseBlocks(label: string, value: string) {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return [""];
-  }
-
-  const pattern = new RegExp(`(?:^|\\n\\n)${escapeRegExp(label)}\\s+\\d+\\n([\\s\\S]*?)(?=\\n\\n${escapeRegExp(label)}\\s+\\d+\\n|$)`, "g");
-  const blocks = [...trimmed.matchAll(pattern)].map((match) => match[1].trim()).filter(Boolean);
-  return blocks.length > 0 ? blocks : [trimmed];
-}
-
-function parseAnswerSections(answer: string) {
-  const trimmed = answer.trim();
-  if (!trimmed) {
-    return [{ title: "参考答案", body: "" }];
-  }
-
-  const headerPattern = /^第\s*\d+\s*题\s*$/gm;
-  const matches = [...trimmed.matchAll(headerPattern)];
-  if (matches.length === 0) {
-    return [{ title: "参考答案", body: stripAnswerLabel(trimmed) }];
-  }
-
-  return matches.map((match, index) => {
-    const start = match.index ?? 0;
-    const bodyStart = start + match[0].length;
-    const end = index + 1 < matches.length ? matches[index + 1].index ?? trimmed.length : trimmed.length;
-    return {
-      title: match[0].trim(),
-      body: stripAnswerLabel(trimmed.slice(bodyStart, end))
-    };
-  });
-}
-
-function stripAnswerLabel(value: string) {
-  return value.trim().replace(/^参考答案\s*[：:]\s*/u, "").trim();
-}
-
-function formatElapsed(startedAt?: string | null, completedAt?: string | null, running = false) {
-  if (!startedAt) {
-    return running ? "等待开始" : "未开始";
-  }
-
-  const start = new Date(startedAt).getTime();
-  const end = completedAt ? new Date(completedAt).getTime() : running ? Date.now() : start;
-  const seconds = Math.max(0, Math.round((end - start) / 1000));
-  if (seconds < 60) {
-    return `${seconds} 秒`;
-  }
-
-  const minutes = Math.floor(seconds / 60);
-  const restSeconds = seconds % 60;
-  if (minutes < 60) {
-    return `${minutes} 分 ${restSeconds} 秒`;
-  }
-
-  const hours = Math.floor(minutes / 60);
-  const restMinutes = minutes % 60;
-  return `${hours} 小时 ${restMinutes} 分`;
-}
-
-function normalizeApiError(message: string) {
-  try {
-    const payload = JSON.parse(message) as { detail?: unknown };
-    if (typeof payload.detail === "string") {
-      return payload.detail;
-    }
-  } catch {
-    return message;
-  }
-
-  return message;
-}
-
-function validateTaskForm(form: TaskFormState) {
-  const title = form.title.trim();
-  const rubric = form.rubric.trim();
-  const answerMinutes = Number(form.answerMinutes);
-  const passingScore = Number(form.passingScore);
-  const maxAttempts = Number(form.maxAttempts);
-  const errors: TaskFormErrors = {};
-
-  if (!title) errors.title = "请填写任务名称";
-  if (!rubric) errors.rubric = "请填写评分标准";
-  if (!form.answerMinutes.trim()) errors.answerMinutes = "请填写答题时间";
-  if (!form.passingScore.trim()) errors.passingScore = "请填写通过分数";
-  if (!form.maxAttempts.trim()) errors.maxAttempts = "请填写重试次数";
-
-  if (!errors.answerMinutes && (!Number.isFinite(answerMinutes) || answerMinutes <= 0)) {
-    errors.answerMinutes = "答题时间必须大于 0 分钟";
-  }
-  if (!errors.passingScore && (!Number.isInteger(passingScore) || passingScore < 0 || passingScore > 100)) {
-    errors.passingScore = "通过分数必须是 0 到 100 的整数";
-  }
-  if (!errors.maxAttempts && (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10)) {
-    errors.maxAttempts = "重试次数必须是 1 到 10 的整数";
-  }
-
-  if (Object.keys(errors).length > 0) {
-    return { input: null, errors };
-  }
-
-  return { input: { title, rubric, answerMinutes, passingScore, maxAttempts }, errors };
-}
-
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function RepeatableFields({
-  label,
-  values,
-  onChange,
-  disabled = false
-}: {
-  label: string;
-  values: string[];
-  onChange: (values: string[]) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <div className="repeatable">
-      <div className="repeatable-head">
-        <span>{label}</span>
-        <button className="button secondary small" type="button" onClick={() => onChange([...values, ""])} disabled={disabled}>
-          <Plus size={14} />
-          添加{label}
-        </button>
-      </div>
-      {values.map((value, index) => (
-        <div className="field repeatable-field" key={`${label}-${index}`}>
-          <label htmlFor={`${label}-${index}`}>{label} {index + 1}</label>
-          <textarea
-            id={`${label}-${index}`}
-            value={value}
-            disabled={disabled}
-            onChange={(event) => onChange(values.map((item, itemIndex) => (itemIndex === index ? event.target.value : item)))}
-          />
-          {values.length > 1 ? (
-            <button className="button secondary small" type="button" onClick={() => onChange(values.filter((_, itemIndex) => itemIndex !== index))} disabled={disabled}>
-              删除{label}
-            </button>
-          ) : null}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function MarkdownPreview({ value }: { value: string }) {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return <div className="markdown-preview markdown-empty">填写评分标准后显示预览。</div>;
-  }
-
-  return (
-    <div className="markdown-preview">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{trimmed}</ReactMarkdown>
-    </div>
-  );
-}
-
-function FieldError({ message }: { message?: string }) {
-  if (!message) {
-    return null;
-  }
-
-  return <p className="field-error">{message}</p>;
-}
-
-function LoadingLabel({ loading, loadingText, text }: { loading: boolean; loadingText: string; text: string }) {
-  if (!loading) {
-    return text;
-  }
-
-  return (
-    <>
-      <span className="button-spinner" aria-hidden="true" />
-      <span>{loadingText}</span>
-    </>
-  );
-}
-
-function statusLabel(status: string) {
-  const labels: Record<string, string> = {
-    compiling_rubric: "分析评分标准中",
-    draft: "草稿",
-    queued: "队列中",
-    running: "运行中",
-    completed: "已完成",
-    needs_review: "待人工处理",
-    failed: "失败",
-    cancelled: "已停止",
-    pending: "待处理",
-    generating: "生成中",
-    reviewing: "审核中",
-    passed: "通过"
-  };
-  return labels[status] ?? status;
 }

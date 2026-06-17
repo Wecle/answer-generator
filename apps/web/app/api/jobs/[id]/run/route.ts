@@ -1,5 +1,6 @@
 import { answerGenerationJobs, createDb } from "@answer-generator/db";
 import { eq } from "drizzle-orm";
+import { isRubricCompiling } from "@/lib/job-status";
 import { resetJobResults } from "@/lib/job-reset";
 import { enqueueGenerationJob } from "@/lib/queue";
 
@@ -12,7 +13,7 @@ export async function POST(_: Request, context: { params: Promise<{ id: string }
     return Response.json({ error: "Job not found" }, { status: 404 });
   }
 
-  if (currentJob.status === "compiling_rubric") {
+  if (isRubricCompiling(currentJob.status)) {
     return Response.json({ error: "评分标准分析中，请稍后再开始任务" }, { status: 409 });
   }
 

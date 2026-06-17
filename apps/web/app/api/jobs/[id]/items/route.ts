@@ -2,6 +2,7 @@ import { answerGenerationItems, answerGenerationJobs, createDb } from "@answer-g
 import { estimateAnswerWordRange } from "@answer-generator/shared";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
+import { isRubricCompiling } from "@/lib/job-status";
 
 const createItemsSchema = z.object({
   items: z.array(
@@ -23,7 +24,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return Response.json({ error: "Job not found" }, { status: 404 });
   }
 
-  if (job.status === "compiling_rubric") {
+  if (isRubricCompiling(job.status)) {
     return Response.json({ error: "评分标准分析中，请稍后再添加题目" }, { status: 409 });
   }
 

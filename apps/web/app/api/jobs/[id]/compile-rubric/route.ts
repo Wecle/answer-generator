@@ -1,5 +1,6 @@
 import { answerGenerationJobs, createDb } from "@answer-generator/db";
 import { eq } from "drizzle-orm";
+import { isRubricCompiling } from "@/lib/job-status";
 import { compileRubricForJob } from "@/lib/rubric-compiler";
 
 export async function POST(_: Request, context: { params: Promise<{ id: string }> }) {
@@ -22,7 +23,7 @@ export async function POST(_: Request, context: { params: Promise<{ id: string }
     .set({
       compiledPrompt: compiled.compiledPrompt,
       rubricSchema: compiled.rubricSchema,
-      status: job.status === "compiling_rubric" ? "draft" : job.status,
+      status: isRubricCompiling(job.status) ? "draft" : job.status,
       updatedAt: new Date()
     })
     .where(eq(answerGenerationJobs.id, job.id))
