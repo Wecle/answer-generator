@@ -1,5 +1,7 @@
 # Answer Generator
 
+[中文文档](README.zh-CN.md)
+
 Answer Generator is an admin-oriented platform for batch-generating interview reference answers, reviewing them against a custom rubric, and retrying low-scoring answers until they meet the configured passing score or hit the retry limit.
 
 It is designed as an independent service that can run next to CiviMind on the same server.
