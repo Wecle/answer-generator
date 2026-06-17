@@ -1,20 +1,54 @@
 # Answer Generator
 
-独立的管理员后台，用于批量生成公务员面试参考答案、按评分标准自动审核、低分重试，并保存完整任务记录。
+Answer Generator is an admin-oriented platform for batch-generating interview reference answers, reviewing them against a custom rubric, and retrying low-scoring answers until they meet the configured passing score or hit the retry limit.
 
-## 模块
+It is designed as an independent service that can run next to CiviMind on the same server.
 
-| 路径 | 说明 |
+## Features
+
+- Create answer-generation tasks with a rubric, answer duration, passing score, and retry limit.
+- Add questions manually or import `.docx` files.
+- Choose ordinary Word parsing or AI-assisted parsing for irregular documents.
+- Compile task rubrics into generation guidance before questions can be processed.
+- Generate one answer per question, then automatically review each answer.
+- Retry failed answers with review feedback until they pass or reach the configured limit.
+- Track live progress, current question, elapsed time, scores, retry feedback, and final status.
+- Export generated answers and review results.
+- Deploy through GitHub Actions with GHCR images and a self-hosted runner.
+
+> [!NOTE]
+> If `OPENAI_API_KEY` is empty, the FastAPI service falls back to deterministic local behavior. This is useful for setup checks and UI testing, while production-quality output requires a configured OpenAI-compatible model service.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  Admin["Admin Browser"] --> Web["Next.js Web + BFF"]
+  Web --> Postgres[(Postgres)]
+  Web --> Redis[(Redis Queue)]
+  Web --> API["FastAPI AI Service"]
+  Worker["BullMQ Worker"] --> Redis
+  Worker --> Postgres
+  Worker --> API
+```
+
+| Workspace | Purpose |
 | --- | --- |
-| `apps/web` | Next.js 管理后台与 BFF API |
-| `apps/api` | FastAPI AI 能力服务：Word 解析、答案生成、答案审核 |
-| `apps/worker` | BullMQ 异步任务 Worker，执行整批任务并写回结果 |
-| `packages/db` | Drizzle Postgres schema 与数据库客户端 |
-| `packages/shared` | 共享类型、答题字数估算、重试策略 |
+| `apps/web` | Next.js admin UI and BFF API routes |
+| `apps/api` | FastAPI service for Word parsing, rubric compilation, answer generation, and review |
+| `apps/worker` | BullMQ worker that processes full generation jobs asynchronously |
+| `packages/db` | Drizzle schema, migrations, and Postgres client |
+| `packages/shared` | Shared status helpers, retry policy, answer length estimates, and export utilities |
 
-## 本地启动
+## Requirements
 
-首次启动先安装 Node 和 Python 依赖。FastAPI 使用项目内虚拟环境 `apps/api/.venv`，避免本机 `python3` 指向不同版本导致 `uvicorn` 缺失。
+- Node.js 20+
+- pnpm 10.13.1
+- Python 3.12 recommended for API service development
+- Docker and Docker Compose
+- Postgres and Redis, either local containers or external services
+
+## Quick Start
 
 ```bash
 pnpm install
@@ -22,88 +56,93 @@ pnpm api:install
 cp .env.example .env
 docker compose up -d postgres redis
 pnpm db:migrate
-pnpm dev:api
+```
+
+Start the three runtime processes:
+
+```bash
 pnpm dev
-pnpm --filter @answer-generator/worker dev
-```
-
-Web 默认运行在 `http://localhost:3000`，FastAPI 默认运行在 `http://localhost:8001`。
-
-点击“开始任务”后必须有 Worker 常驻消费 Redis 队列。未启动 Worker 时，任务会进入队列，页面会提示启动命令：
-
-```bash
-pnpm --filter @answer-generator/worker dev
-```
-
-Next.js、FastAPI、Worker 和迁移脚本都会读取项目根目录 `.env`。
-
-## Python 虚拟环境
-
-`pnpm api:install` 会执行：
-
-```bash
-/usr/bin/python3 -m venv apps/api/.venv
-apps/api/.venv/bin/python -m pip install -r apps/api/requirements.txt
-```
-
-`pnpm dev:api` 会固定使用：
-
-```bash
-apps/api/.venv/bin/python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8001
-```
-
-如果遇到 `No module named uvicorn`，重新执行：
-
-```bash
-pnpm api:install
 pnpm dev:api
-```
-
-## 常用命令
-
-```bash
-pnpm test
-pnpm typecheck
-pnpm build
-pnpm api:install
-pnpm db:generate
-pnpm db:migrate
 pnpm --filter @answer-generator/worker dev
 ```
 
-## AI 配置
+Open [http://localhost:3000](http://localhost:3000).
 
-设置 `OPENAI_API_KEY` 后 FastAPI 会调用 OpenAI 兼容接口。未设置 key 时会使用本地确定性生成器，适合部署自检和页面联调。
+The local FastAPI service runs on [http://localhost:8001](http://localhost:8001). The local Postgres and Redis ports are `5433` and `6380`.
 
-## 部署建议
+## Environment Variables
 
-推荐使用 GitHub Actions 自动部署，方式与 CiviMind 一致：GitHub 构建镜像并推送到 GHCR，服务器上的自托管 runner 拉取镜像、执行迁移、启动服务。服务器手动命令主要用于首次排障和紧急回滚。
+Local development reads `.env` from the project root.
 
-生产服务通过 Docker Compose 编排：
+```env
+DATABASE_URL=postgres://answer_generator:answer_generator@localhost:5433/answer_generator
+REDIS_URL=redis://localhost:6380
+AI_SERVICE_URL=http://localhost:8001
+OPENAI_API_KEY=
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=gpt-4o-mini
+```
 
-| 服务 | 说明 |
+Production deployment reads `.env.production`, normally written by GitHub Actions from the `production` environment secrets and variables.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `DATABASE_URL` | Required | Postgres connection string |
+| `REDIS_URL` | `redis://redis:6379` | Redis connection string |
+| `AI_SERVICE_URL` | `http://api:8001` | Internal FastAPI service URL |
+| `OPENAI_API_KEY` | Empty | OpenAI-compatible API key |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible base URL |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Model used by the AI service |
+| `WORKER_CONCURRENCY` | `1` | Number of concurrent worker jobs |
+| `WEB_BIND_HOST` | `0.0.0.0` | Host binding for production web service |
+| `WEB_PORT` | `3011` | Public web port in production compose |
+
+## Commands
+
+| Command | Description |
 | --- | --- |
-| `web` | Next.js 管理后台与 BFF API，默认绑定 `0.0.0.0:3011` |
-| `api` | FastAPI AI 服务，供 web 和 worker 内网调用 |
-| `worker` | BullMQ Worker，消费 Redis 队列并执行批量生成 |
-| `migrate` | 一次性数据库迁移任务 |
-| `postgres` | 独立 Postgres 数据卷 |
-| `redis` | 独立 Redis 数据卷 |
+| `pnpm dev` | Start the Next.js web app |
+| `pnpm dev:api` | Start FastAPI from `apps/api/.venv` |
+| `pnpm --filter @answer-generator/worker dev` | Start the BullMQ worker |
+| `pnpm api:install` | Create the Python virtual environment and install API dependencies |
+| `pnpm db:generate` | Generate Drizzle migrations |
+| `pnpm db:migrate` | Run database migrations |
+| `pnpm typecheck` | Type-check all TypeScript workspaces |
+| `pnpm test` | Run shared package tests and FastAPI tests |
+| `pnpm build` | Build all production artifacts |
 
-### GitHub Actions 部署
+> [!TIP]
+> The web app can create tasks without the worker, but generation will stay queued until `@answer-generator/worker` is running.
 
-已提供 `.github/workflows/deploy.yml`，流程参考 CiviMind：
+## Word Import
 
-1. `test`：安装依赖、执行 `pnpm typecheck` 和 `pnpm test`
-2. `build`：构建并推送 `web`、`task`、`api`、`worker` 镜像到 GHCR
-3. `deploy`：在自托管 runner 上写入 `.env.production`，拉取镜像、执行迁移、启动服务
+The Word import flow supports two modes:
 
-触发方式：
+- **普通解析**: deterministic parser for regularly formatted `.docx` files.
+- **AI 解析**: model-assisted parser for documents where question titles, materials, and prompts vary by layout.
 
-- 推送到 `main`
-- 在 Actions 页面手动执行 `Deploy Answer Generator`
+Both modes return a normalized list of question items. Materials are optional, and questions can contain multiple prompts.
 
-自托管 runner 需要标签：
+## Task Lifecycle
+
+1. Create a task and enter rubric settings.
+2. The system compiles the rubric into task guidance.
+3. Add questions manually or import a Word file.
+4. Start the task manually.
+5. The worker generates answers for each question.
+6. The worker reviews generated answers against the task rubric.
+7. Low-scoring answers are retried with feedback until they pass or reach the retry limit.
+8. The task finishes as completed or leaves failed items for manual handling.
+
+## Production Deployment
+
+The repository includes a GitHub Actions workflow at `.github/workflows/deploy.yml`.
+
+Deployment flow:
+
+1. Run `pnpm typecheck` and `pnpm test`.
+2. Build and push `web`, `task`, `api`, and `worker` images to GHCR.
+3. Run on a self-hosted runner with labels:
 
 ```text
 self-hosted
@@ -111,53 +150,109 @@ linux
 answer-generator-prod
 ```
 
-服务器需要提前准备 Docker、Docker Compose、GitHub self-hosted runner、Nginx。首次部署完成后，后续发布只需要推送代码到 `main`，Actions 会自动完成构建和部署。
+4. Write `.env.production`.
+5. Start Postgres and Redis.
+6. Run migrations.
+7. Start `web`, `api`, and `worker`.
 
-GitHub Environment `production` 需要配置：
+Required GitHub `production` secrets:
 
-| 类型 | 名称 | 说明 |
-| --- | --- | --- |
-| Secret | `DEPLOY_SSH_KEY` | 部署机拉取仓库用的私钥 |
-| Secret | `POSTGRES_PASSWORD` | 生产数据库密码 |
-| Secret | `OPENAI_API_KEY` | OpenAI 兼容接口密钥 |
-| Variable | `POSTGRES_USER` | 默认 `answer_generator` |
-| Variable | `POSTGRES_DB` | 默认 `answer_generator` |
-| Variable | `REDIS_URL` | 默认 `redis://redis:6379` |
-| Variable | `AI_SERVICE_URL` | 默认 `http://api:8001` |
-| Variable | `WEB_BIND_HOST` | 默认 `0.0.0.0`，公网访问使用该默认值 |
-| Variable | `WEB_PORT` | 默认 `3011` |
-| Variable | `OPENAI_BASE_URL` | 默认 `https://api.openai.com/v1` |
-| Variable | `OPENAI_MODEL` | 默认 `gpt-4o-mini` |
-| Variable | `WORKER_CONCURRENCY` | 默认 `1` |
+| Secret | Purpose |
+| --- | --- |
+| `DEPLOY_SSH_KEY` | SSH key used by the self-hosted runner checkout |
+| `POSTGRES_PASSWORD` | Production Postgres password |
+| `OPENAI_API_KEY` | Model service API key |
 
-### 服务器手动兜底
+Useful GitHub `production` variables:
 
-用于排查 Actions、镜像、环境变量或服务器网络问题：
+| Variable | Suggested value |
+| --- | --- |
+| `POSTGRES_USER` | `answer_generator` |
+| `POSTGRES_DB` | `answer_generator` |
+| `WEB_BIND_HOST` | `0.0.0.0` |
+| `WEB_PORT` | `3011` |
+| `WORKER_CONCURRENCY` | `1` |
+
+After deployment, visit:
+
+```text
+http://SERVER_IP:3011
+```
+
+Make sure the server security group and firewall allow inbound TCP traffic on `3011`.
+
+## Manual Server Operations
+
+Manual commands are useful for initial setup, debugging, and emergency recovery:
 
 ```bash
 cp .env.production.example .env.production
-vim .env.production
-docker compose --env-file .env.production -f docker-compose.prod.yml build
 docker compose --env-file .env.production -f docker-compose.prod.yml up -d postgres redis
 docker compose --env-file .env.production -f docker-compose.prod.yml run --rm migrate
 docker compose --env-file .env.production -f docker-compose.prod.yml up -d web api worker
 docker compose --env-file .env.production -f docker-compose.prod.yml ps
 ```
 
-默认 web 端口为 `0.0.0.0:3011`，可以通过 `http://服务器IP:3011` 访问。服务器安全组和防火墙需要放行 `3011` 端口。需要改端口时设置：
+View logs:
 
 ```bash
-WEB_PORT=3021 docker compose --env-file .env.production -f docker-compose.prod.yml up -d web
+docker compose --env-file .env.production -f docker-compose.prod.yml logs --tail=200 web
+docker compose --env-file .env.production -f docker-compose.prod.yml logs --tail=200 api
+docker compose --env-file .env.production -f docker-compose.prod.yml logs --tail=200 worker
 ```
 
-Nginx 示例在：
+Health check:
 
 ```bash
+curl http://127.0.0.1:3011/api/health
+```
+
+## Nginx
+
+An example reverse proxy config is available at:
+
+```text
 deploy/nginx/answer-generator.conf
 ```
 
-复制后把 `server_name` 改为实际域名，并按服务器习惯启用配置。
+Use it when a domain is available. Direct IP access works through `http://SERVER_IP:3011` after opening the port.
 
-### 与 CiviMind 同服
+## Troubleshooting
 
-当前生产 compose 使用项目独立的 Postgres/Redis 容器和数据卷，Web 端口默认 `3011`，可以和 CiviMind 的 `3000` 同服运行。Worker 并发建议从 `1` 开始，避免批量生成任务挤占服务器资源。
+### `DATABASE_URL is required`
+
+The web app, worker, and migration command all need `DATABASE_URL`. Copy `.env.example` to `.env` for local development, or verify `.env.production` in production.
+
+### `No module named uvicorn`
+
+Install API dependencies into the project virtual environment:
+
+```bash
+pnpm api:install
+pnpm dev:api
+```
+
+### Task stays queued
+
+Start the worker:
+
+```bash
+pnpm --filter @answer-generator/worker dev
+```
+
+For production:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml logs --tail=200 worker
+```
+
+### Browser cannot access `SERVER_IP:3011`
+
+Check the service locally on the server:
+
+```bash
+curl http://127.0.0.1:3011/api/health
+sudo ss -ltnp | grep 3011
+```
+
+Then confirm cloud security group and host firewall rules allow inbound TCP `3011`.
