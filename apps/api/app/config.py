@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 def load_project_env() -> None:
-    env_path = Path(__file__).resolve().parents[3] / ".env"
+    env_path = _find_project_env(Path(__file__).resolve())
     if not env_path.exists():
         return
 
@@ -21,3 +21,10 @@ def _strip_quotes(value: str) -> str:
         return value[1:-1]
     return value
 
+
+def _find_project_env(start_path: Path) -> Path:
+    for directory in (start_path.parent, *start_path.parents):
+        env_path = directory / ".env"
+        if env_path.exists():
+            return env_path
+    return start_path.parent / ".env"
