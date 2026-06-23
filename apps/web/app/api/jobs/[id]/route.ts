@@ -10,7 +10,6 @@ import { eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { RUBRIC_COMPILING_STATUS } from "@/lib/job-status";
 import { resetJobResults, updatePendingItemTargets } from "@/lib/job-reset";
-import { compileRubricLocally } from "@/lib/rubric-compiler";
 
 const updateJobSchema = z.object({
   title: z.string().min(1),
@@ -79,18 +78,13 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
   const input = updateJobSchema.parse(await request.json());
   const db = createDb();
   const range = estimateAnswerWordRange(input.answerMinutes);
-  const compiled = compileRubricLocally({
-    rubric: input.rubric,
-    answerMinutes: input.answerMinutes,
-    passingScore: input.passingScore
-  });
   const [job] = await db
     .update(answerGenerationJobs)
     .set({
       title: input.title,
       rubric: input.rubric,
-      compiledPrompt: compiled.compiledPrompt,
-      rubricSchema: compiled.rubricSchema,
+      compiledPrompt: null,
+      rubricSchema: null,
       answerMinutes: String(input.answerMinutes),
       passingScore: input.passingScore,
       maxAttempts: input.maxAttempts,

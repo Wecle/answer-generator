@@ -292,7 +292,7 @@ export function Dashboard() {
     try {
       const payload = await createJobRequest(input);
       setActiveJobId(payload.jobId);
-      setActiveJobStatus(RUBRIC_COMPILING_STATUS);
+      setActiveJobStatus(payload.status as GenerationJobStatus);
       setTitle(input.title);
       setRubric(input.rubric);
       setAnswerMinutes(input.answerMinutes);
@@ -304,7 +304,6 @@ export function Dashboard() {
       setTaskModalOpen(false);
       await loadJobs();
       await loadJobDetail(payload.jobId, { preserveSelection: true });
-      void analyzeRubric(payload.jobId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "保存失败");
     } finally {

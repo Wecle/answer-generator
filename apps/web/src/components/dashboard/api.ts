@@ -1,7 +1,7 @@
 import type { DocumentParseMode, JobDetailPayload, JobSummary, ParsedQuestionInput, TaskSettingsInput } from "./types";
 
 export async function createJobRequest(input: TaskSettingsInput) {
-  return requestJson<{ jobId: string }>("/api/jobs", {
+  return requestJson<{ jobId: string; status: string }>("/api/jobs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...input, items: [] })

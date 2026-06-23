@@ -1,12 +1,34 @@
 import pytest
 
-from app.models import ReviewAnswerRequest, RunItemRequest
+from app.models import GenerateAnswerResponse, ReviewAnswerRequest, ReviewAnswerResponse, ReviewDimension, RunItemRequest
+import app.services.orchestrator as orchestrator
 from app.services.orchestrator import run_item
 from app.services.reviewer import review_answer
 
 
 @pytest.mark.asyncio
-async def test_run_item_passes_within_attempt_limit():
+async def test_run_item_passes_within_attempt_limit(monkeypatch):
+    async def fake_generate_answer(request):
+        return GenerateAnswerResponse(
+            answer="审题准确，逻辑清晰，措施可行，回应群众需求，建立闭环管理。",
+            model="test-ai",
+            prompt_version="test",
+        )
+
+    async def fake_review_answer(request):
+        return ReviewAnswerResponse(
+            total_score=95,
+            passed=True,
+            dimensions=[
+                ReviewDimension(name="审题准确、逻辑清晰、措施可行、群众需求、闭环管理", score=95, max_score=100)
+            ],
+            reasons=["已通过"],
+            reviewer_model="test-ai",
+        )
+
+    monkeypatch.setattr(orchestrator, "generate_answer", fake_generate_answer)
+    monkeypatch.setattr(orchestrator, "review_answer", fake_review_answer)
+
     result = await run_item(
         RunItemRequest(
             material="材料：某地推进政务服务改革，群众办事效率明显提升。",
@@ -43,7 +65,26 @@ async def test_reviewer_uses_user_rubric_dimensions_and_constructive_feedback():
 
 
 @pytest.mark.asyncio
-async def test_generation_covers_user_rubric_terms():
+async def test_generation_covers_user_rubric_terms(monkeypatch):
+    async def fake_generate_answer(request):
+        return GenerateAnswerResponse(
+            answer="围绕基层协同、责任闭环、群众参与、数字治理展开作答。",
+            model="test-ai",
+            prompt_version="test",
+        )
+
+    async def fake_review_answer(request):
+        return ReviewAnswerResponse(
+            total_score=96,
+            passed=True,
+            dimensions=[ReviewDimension(name="用户评分标准", score=96, max_score=100)],
+            reasons=["已通过"],
+            reviewer_model="test-ai",
+        )
+
+    monkeypatch.setattr(orchestrator, "generate_answer", fake_generate_answer)
+    monkeypatch.setattr(orchestrator, "review_answer", fake_review_answer)
+
     result = await run_item(
         RunItemRequest(
             question="请分析基层治理中的协同问题。",
@@ -62,7 +103,16 @@ async def test_generation_covers_user_rubric_terms():
 
 
 @pytest.mark.asyncio
-async def test_run_item_generates_separate_plain_text_answers_for_multiple_questions():
+async def test_run_item_generates_separate_plain_text_answers_for_multiple_questions(monkeypatch):
+    async def fake_generate_answer(request):
+        return GenerateAnswerResponse(
+            answer="第 1 题\n回应群众需求，建立闭环管理。\n\n第 2 题\n推进数字治理，更好服务群众。",
+            model="test-ai",
+            prompt_version="test",
+        )
+
+    monkeypatch.setattr(orchestrator, "generate_answer", fake_generate_answer)
+
     result = await run_item(
         RunItemRequest(
             material="材料 1\n某地窗口服务存在排队时间长的问题。\n\n材料 2\n某社区正在推进数字治理。",

@@ -1,3 +1,6 @@
+import json
+
+import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
 from app.config import load_project_env
@@ -45,7 +48,12 @@ async def parse_docx(file: UploadFile = File(...), mode: str = Form("rules")) ->
 
 @app.post("/ai/compile-rubric", response_model=CompileRubricResponse)
 async def compile_rubric_endpoint(request: CompileRubricRequest) -> CompileRubricResponse:
-    return await compile_rubric(request)
+    try:
+        return await compile_rubric(request)
+    except RuntimeError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except (ValueError, json.JSONDecodeError, httpx.HTTPError) as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
 
 
 @app.post("/ai/generate-answer", response_model=GenerateAnswerResponse)

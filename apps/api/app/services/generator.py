@@ -7,22 +7,18 @@ import httpx
 from app.models import GenerateAnswerRequest, GenerateAnswerResponse
 
 
-PROMPT_VERSION = "v3"
+PROMPT_VERSION = "v4"
 
 
 async def generate_answer(request: GenerateAnswerRequest) -> GenerateAnswerResponse:
     api_key = os.getenv("OPENAI_API_KEY")
-    if api_key:
-        answer = _strip_markdown(await _generate_with_openai(request, api_key))
-        return GenerateAnswerResponse(
-            answer=answer,
-            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-            prompt_version=PROMPT_VERSION,
-        )
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is required for answer generation.")
 
+    answer = _strip_markdown(await _generate_with_openai(request, api_key))
     return GenerateAnswerResponse(
-        answer=_generate_locally(request),
-        model="local-deterministic",
+        answer=answer,
+        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         prompt_version=PROMPT_VERSION,
     )
 
@@ -63,54 +59,21 @@ def _build_prompt(request: GenerateAnswerRequest) -> str:
         f"答题时间：{request.answer_minutes} 分钟，目标字数约 {request.target_words} 字。\n"
         f"上轮审核意见：\n{feedback}\n\n"
         "生成要求：\n"
-        "1. 只以用户填写的评分标准作为生成依据，逐项覆盖必须覆盖的评分项。\n"
-        "2. 如果存在上轮审核意见，优先修复低分项，并把缺失要点写成具体内容。\n"
-        "3. 题目中包含多个问题时，按每个问题分别输出独立答案，格式为“第 1 题”后直接输出答案正文。\n"
-        "4. 输出纯文本，禁止使用 Markdown 标题、加粗、列表符号、引用和代码块。"
+        "1. 你需要先在内部判断本题主要考察的作答任务和测评要素，不要输出判断过程。\n"
+        "2. 根据题目要求，自主选择最合适的公务员结构化面试作答结构。\n"
+        "3. 常见作答任务包括但不限于：对现象、政策、观点进行分析评价；处理突发事件、投诉、舆情、现场冲突；"
+        "组织活动、调研、宣传、培训、会议、专项整治；处理与领导、同事、群众、服务对象之间的沟通协调；"
+        "结合岗位职责、个人认知、职业价值进行表达；进行情景模拟、劝说、汇报、演讲或现场发言；"
+        "阅读材料后提炼问题、原因、影响和对策；多问并列题需要逐问回应。\n"
+        "4. 评分标准、必须覆盖的评分项和上轮审核意见只作为内容约束，不得写成答案话术。\n"
+        "5. 不要机械套用固定模板；如果题型混合，应以题目中最需要解决的核心任务为主线，融合其他要素。\n"
+        "6. 不要在答案中出现“评分标准”“审核意见”“必须覆盖”等系统用语。\n"
+        "7. 答案应像考生现场口述，结构清楚、内容具体、语言自然。\n"
+        "8. 即使上轮审核意见提到停顿、重音、语速或节奏提示，也只能转化为自然口述表达；"
+        "不得输出 // 注释、括号批注、重音符号、语速标记、旁白说明；不得输出舞台提示。\n"
+        "9. 题目中包含多个问题时，按每个问题分别输出独立答案，格式为“第 1 题”后直接输出答案正文。\n"
+        "10. 输出纯文本，禁止使用 Markdown 标题、加粗、列表符号、引用和代码块。"
     )
-
-
-def _generate_locally(request: GenerateAnswerRequest) -> str:
-    focus_points = _unique(_focus_points(request) + _extract_feedback_keywords(request.previous_feedback))
-    keywords = _unique(_extract_keywords("；".join(focus_points)) + _extract_keywords(request.rubric))
-    feedback_line = "；".join(request.previous_feedback[:3]) if request.previous_feedback else "覆盖评分标准并强化论证层次"
-    keyword_line = "、".join(keywords[:10]) if keywords else "审题准确、逻辑清晰、措施可行"
-    questions = _split_blocks("问题", request.question)
-    materials = _split_blocks("材料", request.material or "")
-    sections: list[str] = []
-
-    for index, question in enumerate(questions):
-        material = _material_for_question(materials, index)
-        answer = _generate_local_question_answer(request, question, material, keyword_line, feedback_line, focus_points)
-        sections.append(f"第 {index + 1} 题\n{answer}")
-
-    return "\n\n".join(sections)
-
-
-def _generate_local_question_answer(
-    request: GenerateAnswerRequest,
-    question: str,
-    material: str,
-    keyword_line: str,
-    feedback_line: str,
-    focus_points: list[str],
-) -> str:
-    material_line = f"结合材料看，{material[:120]}。" if material else "结合题目要求看，需要直接回应问题。"
-    improvement_line = f"本轮作答要重点补足：{feedback_line}。"
-    focus_line = "；".join(focus_points[:8]) if focus_points else keyword_line
-    base = [
-        f"各位考官，我认为这道题的关键在于围绕“{question[:48]}”建立清晰的分析框架。",
-        material_line,
-        f"第一，严格对应评分标准。围绕{keyword_line}展开，确保答案内容能够覆盖用户设定的评分项。",
-        f"第二，逐项补齐评分要点。重点回应：{focus_line}，每个要点都写成明确观点、具体分析或可执行做法。",
-        f"第三，针对审核意见继续优化。{improvement_line}",
-        "最后，回到题目本身收束观点，确保答案和评分标准保持一致。",
-    ]
-    answer = "\n".join(base)
-
-    while _rough_word_count(answer) < request.target_words * 0.75:
-        answer += "\n同时，在具体执行中要坚持问题导向和结果导向，明确责任主体、时间节点和评价标准，形成闭环管理。"
-    return answer
 
 
 def _rubric_focus_points(rubric: str) -> List[str]:
@@ -153,35 +116,6 @@ def _looks_like_rubric_intro(line: str) -> bool:
     return any(term in line for term in ("评分细则适用于", "总分100分", "不包含仪态", "各维度评分标准"))
 
 
-def _split_blocks(label: str, text: str) -> list[str]:
-    stripped = text.strip()
-    if not stripped:
-        return []
-
-    pattern = re.compile(rf"^\s*{re.escape(label)}\s*\d*\s*[：:]?\s*$", re.MULTILINE)
-    matches = list(pattern.finditer(stripped))
-    if not matches:
-        return [stripped]
-
-    blocks: list[str] = []
-    for index, match in enumerate(matches):
-        start = match.end()
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(stripped)
-        block = stripped[start:end].strip()
-        if block:
-            blocks.append(block)
-
-    return blocks or [stripped]
-
-
-def _material_for_question(materials: list[str], index: int) -> str:
-    if not materials:
-        return ""
-    if len(materials) > 1 and index < len(materials):
-        return materials[index]
-    return "\n".join(materials)
-
-
 def _strip_markdown(text: str) -> str:
     cleaned = text.replace("```", "")
     cleaned = re.sub(r"^\s{0,3}#{1,6}\s*", "", cleaned, flags=re.MULTILINE)
@@ -209,16 +143,6 @@ def _plain_rubric_text(rubric: str) -> str:
     return text.replace("`", "")
 
 
-def _extract_feedback_keywords(feedback: List[str]) -> List[str]:
-    keywords: List[str] = []
-    for item in feedback:
-        if "必须补充：" not in item:
-            continue
-        tail = item.split("必须补充：", 1)[1].split("。", 1)[0]
-        keywords.extend(_extract_keywords(tail))
-    return keywords
-
-
 def _unique(values: List[str]) -> List[str]:
     seen: set[str] = set()
     result: List[str] = []
@@ -228,7 +152,3 @@ def _unique(values: List[str]) -> List[str]:
         seen.add(value)
         result.append(value)
     return result
-
-
-def _rough_word_count(text: str) -> int:
-    return len([char for char in text if not char.isspace()]) // 2

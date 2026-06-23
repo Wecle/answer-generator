@@ -3,7 +3,6 @@ import { estimateAnswerWordRange, summarizeJobProgress, type GenerationItemStatu
 import { desc } from "drizzle-orm";
 import { z } from "zod";
 import { deriveJobTiming, RUBRIC_COMPILING_STATUS } from "@/lib/job-status";
-import { compileRubricLocally } from "@/lib/rubric-compiler";
 
 const itemSchema = z.object({
   title: z.string().optional(),
@@ -23,18 +22,13 @@ const createJobSchema = z.object({
 export async function POST(request: Request) {
   const input = createJobSchema.parse(await request.json());
   const db = createDb();
-  const compiled = compileRubricLocally({
-    rubric: input.rubric,
-    answerMinutes: input.answerMinutes,
-    passingScore: input.passingScore
-  });
   const [job] = await db
     .insert(answerGenerationJobs)
     .values({
       title: input.title,
       rubric: input.rubric,
-      compiledPrompt: compiled.compiledPrompt,
-      rubricSchema: compiled.rubricSchema,
+      compiledPrompt: null,
+      rubricSchema: null,
       answerMinutes: String(input.answerMinutes),
       passingScore: input.passingScore,
       maxAttempts: input.maxAttempts,
@@ -57,7 +51,7 @@ export async function POST(request: Request) {
     );
   }
 
-  return Response.json({ jobId: job.id, queued: false });
+  return Response.json({ jobId: job.id, status: job.status, queued: false });
 }
 
 export async function GET() {
