@@ -55,3 +55,29 @@ export async function enqueueGenerationJob(jobId: string) {
     await queue.close();
   }
 }
+
+export async function enqueueGenerationItem(jobId: string, itemId: string) {
+  if (!process.env.REDIS_URL) {
+    return { enqueued: false, workerOnline: false };
+  }
+
+  const queue = new Queue("answer-generation", {
+    connection: redisConnection(process.env.REDIS_URL)
+  });
+
+  try {
+    const client = await queue.client;
+    const workerOnline = Boolean(await client.get(WORKER_HEARTBEAT_KEY));
+    await queue.add("run-item", { jobId, itemId }, {
+      attempts: 2,
+      backoff: { type: "exponential", delay: 5000 },
+      jobId: `answer-generation-${jobId}-item-${itemId}`,
+      removeOnComplete: true,
+      removeOnFail: 20
+    });
+
+    return { enqueued: true, workerOnline };
+  } finally {
+    await queue.close();
+  }
+}

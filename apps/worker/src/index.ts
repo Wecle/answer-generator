@@ -13,6 +13,7 @@ loadProjectEnv();
 
 interface RunJobPayload {
   jobId: string;
+  itemId?: string;
 }
 
 interface GenerateAnswerResponse {
@@ -59,6 +60,11 @@ const heartbeatTimer = setInterval(() => {
 const worker = new Worker<RunJobPayload>(
   "answer-generation",
   async (queueJob) => {
+    if (queueJob.data.itemId) {
+      await runSingleItem(queueJob.data.jobId, queueJob.data.itemId);
+      return;
+    }
+
     const current = await getJob(queueJob.data.jobId);
     if (!current || current.status === "cancelled") {
       return;
@@ -77,7 +83,7 @@ const worker = new Worker<RunJobPayload>(
     const initialItems = await db
       .select()
       .from(answerGenerationItems)
-      .where(and(eq(answerGenerationItems.jobId, job.id), ne(answerGenerationItems.status, "passed")));
+      .where(and(eq(answerGenerationItems.jobId, job.id), eq(answerGenerationItems.status, "pending")));
 
     for (const item of initialItems) {
       await clearItemAttempts(item.id);
@@ -245,6 +251,146 @@ const worker = new Worker<RunJobPayload>(
   }
 );
 
+async function runSingleItem(jobId: string, itemId: string) {
+  const job = await getJob(jobId);
+  if (!job || job.status === "cancelled") {
+    return;
+  }
+
+  const [item] = await db
+    .select()
+    .from(answerGenerationItems)
+    .where(and(eq(answerGenerationItems.jobId, jobId), eq(answerGenerationItems.id, itemId)));
+
+  if (!item) {
+    return;
+  }
+
+  await clearItemAttempts(item.id);
+
+  let feedback: string[] = [];
+  for (let attemptNumber = 1; attemptNumber <= job.maxAttempts; attemptNumber += 1) {
+    if (await isCancelled(job.id)) {
+      await markItemPending(item.id);
+      return;
+    }
+
+    await db.update(answerGenerationItems).set({ status: "generating", updatedAt: new Date() }).where(eq(answerGenerationItems.id, item.id));
+
+    let generated: GenerateAnswerResponse;
+    let attemptId: string;
+    try {
+      generated = await generateAnswer({
+        material: item.material,
+        question: item.question,
+        rubric: job.rubric,
+        compiledPrompt: job.compiledPrompt,
+        rubricSchema: job.rubricSchema,
+        answerMinutes: Number(job.answerMinutes),
+        targetWords: item.targetWords,
+        previousFeedback: feedback
+      });
+
+      const [createdAttempt] = await db
+        .insert(answerGenerationAttempts)
+        .values({
+          itemId: item.id,
+          attemptNumber,
+          status: "generated",
+          promptVersion: generated.prompt_version,
+          model: generated.model,
+          answer: generated.answer
+        })
+        .returning();
+      attemptId = createdAttempt.id;
+    } catch (error) {
+      await db.insert(answerGenerationAttempts).values({
+        itemId: item.id,
+        attemptNumber,
+        status: "failed",
+        model: "fastapi-ai-service",
+        errorMessage: error instanceof Error ? error.message : "生成失败"
+      });
+      await db.update(answerGenerationItems).set({ status: "failed", updatedAt: new Date() }).where(eq(answerGenerationItems.id, item.id));
+      await updateJobFinalStatus(job.id);
+      return;
+    }
+
+    if (await isCancelled(job.id)) {
+      await markItemPending(item.id);
+      return;
+    }
+
+    await db.update(answerGenerationItems).set({ status: "reviewing", updatedAt: new Date() }).where(eq(answerGenerationItems.id, item.id));
+
+    try {
+      const review = await reviewAnswer({
+        material: item.material,
+        question: item.question,
+        rubric: job.rubric,
+        rubricSchema: job.rubricSchema,
+        answer: generated.answer,
+        passingScore: job.passingScore
+      });
+
+      await db.update(answerGenerationAttempts).set({ status: "reviewed" }).where(eq(answerGenerationAttempts.id, attemptId));
+
+      await db.insert(answerGenerationReviews).values({
+        attemptId,
+        totalScore: review.total_score,
+        passed: review.passed,
+        dimensions: review.dimensions.map((dimension) => ({
+          name: dimension.name,
+          score: dimension.score,
+          maxScore: dimension.max_score
+        })),
+        reasons: review.reasons,
+        reviewerModel: review.reviewer_model
+      });
+
+      if (review.passed) {
+        await db
+          .update(answerGenerationItems)
+          .set({
+            status: "passed",
+            finalAnswer: generated.answer,
+            finalScore: review.total_score,
+            needsManualReview: false,
+            updatedAt: new Date()
+          })
+          .where(eq(answerGenerationItems.id, item.id));
+        await updateJobFinalStatus(job.id);
+        return;
+      }
+
+      feedback = review.reasons;
+      await db
+        .update(answerGenerationItems)
+        .set({
+          status: attemptNumber >= job.maxAttempts ? "needs_review" : "pending",
+          finalAnswer: generated.answer,
+          finalScore: review.total_score,
+          needsManualReview: attemptNumber >= job.maxAttempts,
+          updatedAt: new Date()
+        })
+        .where(eq(answerGenerationItems.id, item.id));
+
+      if (attemptNumber >= job.maxAttempts) {
+        await updateJobFinalStatus(job.id);
+        return;
+      }
+    } catch (error) {
+      await db
+        .update(answerGenerationAttempts)
+        .set({ status: "failed", errorMessage: error instanceof Error ? error.message : "审核失败" })
+        .where(eq(answerGenerationAttempts.id, attemptId));
+      await db.update(answerGenerationItems).set({ status: "failed", updatedAt: new Date() }).where(eq(answerGenerationItems.id, item.id));
+      await updateJobFinalStatus(job.id);
+      return;
+    }
+  }
+}
+
 const events = new QueueEvents("answer-generation", { connection: redisConnection(redisUrl) });
 
 events.on("failed", async ({ failedReason }) => {
@@ -359,11 +505,35 @@ async function markRunningItemsPending(jobId: string) {
     .where(and(eq(answerGenerationItems.jobId, jobId), inArray(answerGenerationItems.status, ["generating", "reviewing"])));
 }
 
+async function markItemPending(itemId: string) {
+  await db
+    .update(answerGenerationItems)
+    .set({ status: "pending", updatedAt: new Date() })
+    .where(eq(answerGenerationItems.id, itemId));
+}
+
 async function markRunningItemsNeedsReview(jobId: string) {
   await db
     .update(answerGenerationItems)
     .set({ status: "needs_review", needsManualReview: true, updatedAt: new Date() })
     .where(and(eq(answerGenerationItems.jobId, jobId), inArray(answerGenerationItems.status, ["generating", "reviewing"])));
+}
+
+async function updateJobFinalStatus(jobId: string) {
+  const job = await getJob(jobId);
+  if (!job || job.status === "cancelled" || job.status === "running" || job.status === "queued") {
+    return;
+  }
+
+  const finalItems = await db
+    .select()
+    .from(answerGenerationItems)
+    .where(eq(answerGenerationItems.jobId, jobId));
+  const allPassed = finalItems.length > 0 && finalItems.every((item) => item.status === "passed");
+  await db
+    .update(answerGenerationJobs)
+    .set({ status: allPassed ? "completed" : "needs_review", completedAt: new Date(), updatedAt: new Date() })
+    .where(eq(answerGenerationJobs.id, jobId));
 }
 
 async function clearItemAttempts(itemId: string) {

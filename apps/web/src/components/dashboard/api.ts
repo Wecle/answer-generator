@@ -57,6 +57,10 @@ export async function runJobRequest(jobId: string) {
   return requestJson<{ workerOnline?: boolean }>(`/api/jobs/${jobId}/run`, { method: "POST" });
 }
 
+export async function regenerateItemRequest(jobId: string, itemId: string) {
+  return requestJson<{ workerOnline?: boolean }>(`/api/jobs/${jobId}/items/${itemId}/regenerate`, { method: "POST" });
+}
+
 export async function stopJobRequest(jobId: string) {
   return requestJson(`/api/jobs/${jobId}/stop`, { method: "POST" });
 }

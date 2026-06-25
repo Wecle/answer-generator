@@ -82,9 +82,12 @@ export function formatElapsed(startedAt?: string | null, completedAt?: string | 
 
 export function normalizeApiError(message: string) {
   try {
-    const payload = JSON.parse(message) as { detail?: unknown };
+    const payload = JSON.parse(message) as { detail?: unknown; error?: unknown };
     if (typeof payload.detail === "string") {
       return payload.detail;
+    }
+    if (typeof payload.error === "string") {
+      return payload.error;
     }
   } catch {
     return message;

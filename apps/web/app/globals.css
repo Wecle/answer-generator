@@ -405,6 +405,8 @@ label.button:focus-within {
 }
 
 .result-panel {
+  display: flex;
+  flex-direction: column;
   animation-delay: 70ms;
 }
 
@@ -712,6 +714,16 @@ label.button:focus-within {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+}
+
+.result-actions {
+  position: sticky;
+  bottom: -22px;
+  z-index: 2;
+  margin: auto -22px -22px;
+  border-top: 1px solid var(--line);
+  padding: 16px 22px 22px;
+  background: var(--paper);
 }
 
 .review-box {

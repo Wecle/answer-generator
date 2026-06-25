@@ -301,18 +301,24 @@ export function CurrentQuestionPanel({
 
 export function ResultPanel({
   answerSections,
+  canRegenerate,
+  isRegenerating,
   result,
   retryFeedbackAttempts,
   selected,
   selectedLatestReview,
-  visibleResult
+  visibleResult,
+  onRegenerate
 }: {
   answerSections: AnswerSection[];
+  canRegenerate: boolean;
+  isRegenerating: boolean;
   result: RunResponse | null;
   retryFeedbackAttempts: RunResponse["attempts"];
   selected: QuestionItem;
   selectedLatestReview: NonNullable<QuestionItem["attempts"]>[number]["review"] | null | undefined;
   visibleResult: RunResponse | null;
+  onRegenerate: () => void;
 }) {
   return (
     <section className="panel active-question-panel result-panel" key={`${selected.id}-result`}>
@@ -350,6 +356,12 @@ export function ResultPanel({
       ) : (
         <div className="result empty">自动审核完成后显示结果。</div>
       )}
+      <div className="actions result-actions">
+        <button className="button secondary" type="button" onClick={onRegenerate} disabled={!canRegenerate || isRegenerating}>
+          {isRegenerating ? <span className="button-spinner" aria-hidden="true" /> : <RotateCw size={16} />}
+          {isRegenerating ? "重新生成中" : "重新生成"}
+        </button>
+      </div>
     </section>
   );
 }

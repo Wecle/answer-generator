@@ -44,6 +44,41 @@ export async function resetJobResults(db: DbClient, jobId: string, scope: "retry
   return { resetItems: itemIds.length, totalItems: allItems.length };
 }
 
+export async function resetJobItemResult(db: DbClient, jobId: string, itemId: string) {
+  const [item] = await db
+    .select()
+    .from(answerGenerationItems)
+    .where(and(eq(answerGenerationItems.id, itemId), eq(answerGenerationItems.jobId, jobId)));
+
+  if (!item) {
+    return { resetItems: 0 };
+  }
+
+  const attempts = await db
+    .select()
+    .from(answerGenerationAttempts)
+    .where(eq(answerGenerationAttempts.itemId, itemId));
+  const attemptIds = attempts.map((attempt) => attempt.id);
+
+  if (attemptIds.length > 0) {
+    await db.delete(answerGenerationReviews).where(inArray(answerGenerationReviews.attemptId, attemptIds));
+    await db.delete(answerGenerationAttempts).where(inArray(answerGenerationAttempts.id, attemptIds));
+  }
+
+  await db
+    .update(answerGenerationItems)
+    .set({
+      status: "pending",
+      finalAnswer: null,
+      finalScore: null,
+      needsManualReview: false,
+      updatedAt: new Date()
+    })
+    .where(and(eq(answerGenerationItems.id, itemId), eq(answerGenerationItems.jobId, jobId)));
+
+  return { resetItems: 1 };
+}
+
 export async function updatePendingItemTargets(
   db: DbClient,
   jobId: string,

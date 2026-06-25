@@ -12,6 +12,7 @@ import {
   loadJobDetailRequest,
   loadJobsRequest,
   parseDocumentRequest,
+  regenerateItemRequest,
   runJobRequest,
   saveItemRequest,
   stopJobRequest,
@@ -74,6 +75,7 @@ export function Dashboard() {
   const [parsingDocumentMode, setParsingDocumentMode] = useState<DocumentParseMode | null>(null);
   const [documentParseError, setDocumentParseError] = useState<string | null>(null);
   const [savingItem, setSavingItem] = useState(false);
+  const [regeneratingItemIds, setRegeneratingItemIds] = useState<string[]>([]);
   const [loadingJobs, setLoadingJobs] = useState(false);
   const [savedJobs, setSavedJobs] = useState<JobSummary[]>([]);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
@@ -159,12 +161,23 @@ export function Dashboard() {
   }, [items]);
   const isPollingActiveJob = shouldPollJobStatus(activeJobStatus);
   const hasActiveItemProcessing = jobProgress.processing > 0;
-  const shouldPollActiveJob = isPollingActiveJob || hasActiveItemProcessing;
+  const hasQueuedItemRegeneration = regeneratingItemIds.length > 0;
+  const shouldPollActiveJob = isPollingActiveJob || hasActiveItemProcessing || hasQueuedItemRegeneration;
   const isRubricCompiling = activeJobStatus === RUBRIC_COMPILING_STATUS;
-  const isEditingLocked = shouldPollActiveJob;
+  const isEditingLocked = isPollingActiveJob;
+  const isTaskActionLocked = isPollingActiveJob || hasActiveItemProcessing || hasQueuedItemRegeneration;
+  const isSelectedItemLocked = selected
+    ? regeneratingItemIds.includes(selected.id) || selected.status === "generating" || selected.status === "reviewing"
+    : false;
   const lockedEditMessage = isRubricCompiling ? "正在分析评分标准，完成后可继续操作" : "生成中暂不允许新增或修改题目";
-  const canRestartJob = items.length > 0 && !isEditingLocked && activeJobStatus !== "completed";
+  const canRestartJob = items.length > 0 && !isTaskActionLocked && activeJobStatus !== "completed";
   const restartJobLabel = activeJobStatus === "draft" ? "开始任务" : activeJobStatus === "cancelled" ? "重新开始任务" : "重新审核未通过";
+  const canRegenerateSelectedItem =
+    Boolean(activeJobId && selected) &&
+    !isEditingLocked &&
+    !isSelectedItemLocked &&
+    selected?.status !== "generating" &&
+    selected?.status !== "reviewing";
   const answerSections = useMemo(() => parseAnswerSections(visibleResult?.final_answer ?? ""), [visibleResult?.final_answer]);
   const activeJobSummary = savedJobs.find((job) => job.id === activeJobId) ?? null;
   const elapsedLabel = formatElapsed(activeJobSummary?.startedAt, activeJobSummary?.completedAt, shouldPollActiveJob);
@@ -222,7 +235,7 @@ export function Dashboard() {
   }
 
   function openEditTaskModal() {
-    if (isEditingLocked) {
+    if (isTaskActionLocked) {
       setError(isRubricCompiling ? "正在分析评分标准，完成后可修改任务设置" : "生成中暂不允许修改任务设置");
       return;
     }
@@ -251,13 +264,13 @@ export function Dashboard() {
   }
 
   function updateSelected(patch: Partial<QuestionItem>) {
-    if (isEditingLocked) return;
+    if (isEditingLocked || isSelectedItemLocked) return;
     if (!selected) return;
     setItems((current) => current.map((item) => (item.id === selected.id ? { ...item, ...patch } : item)));
   }
 
   function updateSelectedMaterials(materials: string[]) {
-    if (isEditingLocked) return;
+    if (isEditingLocked || isSelectedItemLocked) return;
     if (!selected) return;
     setItemForms((current) => ({
       ...current,
@@ -270,7 +283,7 @@ export function Dashboard() {
   }
 
   function updateSelectedQuestions(questions: string[]) {
-    if (isEditingLocked) return;
+    if (isEditingLocked || isSelectedItemLocked) return;
     if (!selected) return;
     setItemForms((current) => ({
       ...current,
@@ -332,7 +345,7 @@ export function Dashboard() {
   }
 
   function requestUpdateJobSettings() {
-    if (isEditingLocked) {
+    if (isTaskActionLocked) {
       setError(isRubricCompiling ? "正在分析评分标准，完成后可修改任务设置" : "生成中暂不允许修改任务设置");
       return;
     }
@@ -346,7 +359,7 @@ export function Dashboard() {
 
   async function updateJobSettings(applyMode: "regenerate_all" | "future_only") {
     if (!activeJobId) return;
-    if (isEditingLocked) {
+    if (isTaskActionLocked) {
       setError(isRubricCompiling ? "正在分析评分标准，完成后可修改任务设置" : "生成中暂不允许修改任务设置");
       return;
     }
@@ -382,7 +395,7 @@ export function Dashboard() {
       setError("请先新增任务");
       return;
     }
-    if (isEditingLocked) {
+    if (isTaskActionLocked) {
       setError(lockedEditMessage);
       return;
     }
@@ -394,7 +407,7 @@ export function Dashboard() {
 
   async function parseDocument(mode: DocumentParseMode) {
     if (!pendingDocumentFile) return;
-    if (isEditingLocked) {
+    if (isTaskActionLocked) {
       setDocumentParseError(lockedEditMessage);
       return;
     }
@@ -420,7 +433,7 @@ export function Dashboard() {
       setError("请先新增任务");
       return;
     }
-    if (isEditingLocked) {
+    if (isTaskActionLocked) {
       setError(lockedEditMessage);
       return;
     }
@@ -437,7 +450,7 @@ export function Dashboard() {
   }
 
   async function addQuestionFromModal() {
-    if (isEditingLocked) {
+    if (isTaskActionLocked) {
       setError(lockedEditMessage);
       return;
     }
@@ -506,6 +519,12 @@ export function Dashboard() {
       finalScore: item.finalScore,
       attempts: item.attempts
     }));
+    setRegeneratingItemIds((current) =>
+      current.filter((itemId) => {
+        const item = loadedItems.find((loadedItem) => loadedItem.id === itemId);
+        return item ? item.status === "pending" || item.status === "generating" || item.status === "reviewing" : false;
+      })
+    );
     setItems(loadedItems);
     setSelectedId((current) => {
       if (options?.focusItemId && loadedItems.some((item) => item.id === options.focusItemId)) {
@@ -564,6 +583,39 @@ export function Dashboard() {
     await loadJobDetail(activeJobId, { preserveSelection: true });
   }
 
+  async function regenerateSelectedItem() {
+    if (!activeJobId || !selected) return;
+    if (!canRegenerateSelectedItem) {
+      setError(lockedEditMessage);
+      return;
+    }
+    if (!selected.question.trim()) {
+      setError("请至少保留一个问题");
+      return;
+    }
+
+    const itemId = selected.id;
+    setError(null);
+    setResult(null);
+    setRegeneratingItemIds((current) => (current.includes(itemId) ? current : [...current, itemId]));
+    setSavingItem(true);
+    try {
+      await saveItemRequest(activeJobId, selected);
+      const payload = await regenerateItemRequest(activeJobId, itemId);
+      await loadJobs();
+      await loadJobDetail(activeJobId, { preserveSelection: true });
+      if (payload.workerOnline === false) {
+        setRegeneratingItemIds((current) => current.filter((currentItemId) => currentItemId !== itemId));
+        setError("Worker 未启动，题目已进入队列。请启动 pnpm --filter @answer-generator/worker dev 后继续。");
+      }
+    } catch (err) {
+      setRegeneratingItemIds((current) => current.filter((currentItemId) => currentItemId !== itemId));
+      setError(err instanceof Error ? normalizeApiError(err.message) : "重新生成失败");
+    } finally {
+      setSavingItem(false);
+    }
+  }
+
   async function deleteJob() {
     if (!activeJobId) return;
     setError(null);
@@ -585,7 +637,7 @@ export function Dashboard() {
 
   async function saveSelectedItem() {
     if (!activeJobId || !selected) return;
-    if (isEditingLocked) {
+    if (isEditingLocked || isSelectedItemLocked) {
       setError(lockedEditMessage);
       return;
     }
@@ -608,7 +660,7 @@ export function Dashboard() {
 
   async function deleteSelectedItem() {
     if (!activeJobId || !selected) return;
-    if (isEditingLocked) {
+    if (isEditingLocked || isSelectedItemLocked) {
       setError(lockedEditMessage);
       return;
     }
@@ -647,7 +699,7 @@ export function Dashboard() {
             activeJobStatus={activeJobStatus}
             canRestartJob={canRestartJob}
             elapsedLabel={elapsedLabel}
-            isEditingLocked={isEditingLocked}
+            isEditingLocked={isTaskActionLocked}
             isPollingActiveJob={isPollingActiveJob}
             isRubricCompiling={isRubricCompiling}
             itemCount={items.length}
@@ -672,7 +724,7 @@ export function Dashboard() {
           items.length > 0 ? (
             <div className={selected ? "task-layout" : "task-layout queue-only"}>
               <QuestionQueue
-                isEditingLocked={isEditingLocked}
+                isEditingLocked={isTaskActionLocked}
                 items={items}
                 selectedId={selected?.id ?? ""}
                 shouldPollActiveJob={shouldPollActiveJob}
@@ -685,7 +737,7 @@ export function Dashboard() {
               {selected ? (
                 <CurrentQuestionPanel
                   form={selectedForm}
-                  isEditingLocked={isEditingLocked}
+                  isEditingLocked={isEditingLocked || isSelectedItemLocked}
                   savingItem={savingItem}
                   selected={selected}
                   wordRange={wordRange}
@@ -699,11 +751,14 @@ export function Dashboard() {
               {selected ? (
                 <ResultPanel
                   answerSections={answerSections}
+                  canRegenerate={canRegenerateSelectedItem}
+                  isRegenerating={regeneratingItemIds.includes(selected.id)}
                   result={result}
                   retryFeedbackAttempts={retryFeedbackAttempts}
                   selected={selected}
                   selectedLatestReview={selectedLatestReview}
                   visibleResult={visibleResult}
+                  onRegenerate={regenerateSelectedItem}
                 />
               ) : null}
             </div>
@@ -761,7 +816,7 @@ export function Dashboard() {
       {questionModalOpen ? (
         <QuestionModal
           form={questionForm}
-          isEditingLocked={isEditingLocked}
+          isEditingLocked={isTaskActionLocked}
           onClose={() => setQuestionModalOpen(false)}
           onFormChange={setQuestionForm}
           onSubmit={addQuestionFromModal}
