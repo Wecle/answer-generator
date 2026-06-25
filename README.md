@@ -83,6 +83,7 @@ AI_SERVICE_URL=http://localhost:8001
 OPENAI_API_KEY=
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-4o-mini
+OPENAI_TIMEOUT_SECONDS=180
 ```
 
 Production deployment reads `.env.production`, normally written by GitHub Actions from the `production` environment secrets and variables.
@@ -95,6 +96,7 @@ Production deployment reads `.env.production`, normally written by GitHub Action
 | `OPENAI_API_KEY` | Empty | OpenAI-compatible API key |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible base URL |
 | `OPENAI_MODEL` | `gpt-4o-mini` | Model used by the AI service |
+| `OPENAI_TIMEOUT_SECONDS` | `180` | Timeout for AI service model calls |
 | `WORKER_CONCURRENCY` | `1` | Number of concurrent worker jobs |
 | `WEB_BIND_HOST` | `0.0.0.0` | Host binding for production web service |
 | `WEB_PORT` | `3011` | Public web port in production compose |

@@ -173,3 +173,54 @@ async def test_compile_with_openai_repairs_invalid_ai_schema(monkeypatch):
     assert result.rubric_schema.dimensions[0].criteria == ["准确把握题目核心任务"]
     assert len(prompts) == 2
     assert "修复" in prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_compile_with_openai_uses_configured_timeout(monkeypatch):
+    request = CompileRubricRequest(
+        rubric="审题准确度15分，论证思维20分。",
+        answer_minutes=3,
+        passing_score=95,
+    )
+    captured_timeout = None
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"role_prompt":"你是一名考生","answer_principles":["自然作答"],'
+                                '"dimensions":[{"name":"审题准确度","max_score":15,'
+                                '"criteria":["准确把握题目核心任务"],"pitfalls":["偏题"]}],'
+                                '"retry_policy":["修复低分项"],"output_rules":["纯文本"]}'
+                            )
+                        }
+                    }
+                ]
+            }
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            nonlocal captured_timeout
+            captured_timeout = kwargs.get("timeout")
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, headers, json):
+            return FakeResponse()
+
+    monkeypatch.setenv("OPENAI_TIMEOUT_SECONDS", "180")
+    monkeypatch.setattr(rubric_compiler.httpx, "AsyncClient", FakeAsyncClient)
+
+    await _compile_with_openai(request, "test-key")
+
+    assert captured_timeout == 180

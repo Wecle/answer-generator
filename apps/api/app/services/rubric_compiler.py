@@ -27,6 +27,8 @@ DEFAULT_OUTPUT_RULES = [
     "多题目时按“第 1 题”分段。",
 ]
 
+DEFAULT_OPENAI_TIMEOUT_SECONDS = 180
+
 
 async def compile_rubric(request: CompileRubricRequest) -> CompileRubricResponse:
     api_key = os.getenv("OPENAI_API_KEY")
@@ -41,7 +43,7 @@ async def _compile_with_openai(request: CompileRubricRequest, api_key: str) -> C
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     prompt = _build_compile_prompt(request)
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=_openai_timeout_seconds()) as client:
         data = await _post_json_completion(client, base_url, model, api_key, prompt)
 
         try:
@@ -187,3 +189,16 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _openai_timeout_seconds() -> int:
+    raw_value = os.getenv("OPENAI_TIMEOUT_SECONDS")
+    if not raw_value:
+        return DEFAULT_OPENAI_TIMEOUT_SECONDS
+
+    try:
+        timeout = int(raw_value)
+    except ValueError:
+        return DEFAULT_OPENAI_TIMEOUT_SECONDS
+
+    return timeout if timeout > 0 else DEFAULT_OPENAI_TIMEOUT_SECONDS

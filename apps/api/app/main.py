@@ -52,6 +52,8 @@ async def compile_rubric_endpoint(request: CompileRubricRequest) -> CompileRubri
         return await compile_rubric(request)
     except RuntimeError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+    except httpx.TimeoutException as error:
+        raise HTTPException(status_code=504, detail="评分标准分析超时，请稍后重试或提高 OPENAI_TIMEOUT_SECONDS") from error
     except (ValueError, json.JSONDecodeError, httpx.HTTPError) as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 

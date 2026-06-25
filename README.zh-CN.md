@@ -84,6 +84,7 @@ AI_SERVICE_URL=http://localhost:8001
 OPENAI_API_KEY=
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-4o-mini
+OPENAI_TIMEOUT_SECONDS=180
 ```
 
 生产部署读取 `.env.production`。GitHub Actions 部署时会根据 `production` 环境的 secrets 和 variables 自动写入。
@@ -96,6 +97,7 @@ OPENAI_MODEL=gpt-4o-mini
 | `OPENAI_API_KEY` | 空 | OpenAI 兼容接口密钥 |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI 兼容接口地址 |
 | `OPENAI_MODEL` | `gpt-4o-mini` | AI 服务使用的模型 |
+| `OPENAI_TIMEOUT_SECONDS` | `180` | AI 服务调用模型的超时时间，单位秒 |
 | `WORKER_CONCURRENCY` | `1` | Worker 并发任务数 |
 | `WEB_BIND_HOST` | `0.0.0.0` | 生产 Web 服务绑定地址 |
 | `WEB_PORT` | `3011` | 生产 Web 服务公网端口 |
