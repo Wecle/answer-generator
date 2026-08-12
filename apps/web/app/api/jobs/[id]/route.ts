@@ -6,7 +6,7 @@ import {
   createDb
 } from "@answer-generator/db";
 import { estimateAnswerWordRange, summarizeJobProgress, type GenerationItemStatus } from "@answer-generator/shared";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, notInArray } from "drizzle-orm";
 import { z } from "zod";
 import { RUBRIC_COMPILING_STATUS } from "@/lib/job-status";
 import { resetJobResults, updatePendingItemTargets } from "@/lib/job-reset";
@@ -85,17 +85,35 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
       rubric: input.rubric,
       compiledPrompt: null,
       rubricSchema: null,
+      rubricCompilation: {
+        stage: "extracting_requirements",
+        updatedAt: new Date().toISOString()
+      },
       answerMinutes: String(input.answerMinutes),
       passingScore: input.passingScore,
       maxAttempts: input.maxAttempts,
       status: RUBRIC_COMPILING_STATUS,
       updatedAt: new Date()
     })
-    .where(eq(answerGenerationJobs.id, id))
+    .where(
+      and(
+        eq(answerGenerationJobs.id, id),
+        notInArray(answerGenerationJobs.status, ["queued", "running"])
+      )
+    )
     .returning();
 
   if (!job) {
-    return Response.json({ error: "Job not found" }, { status: 404 });
+    const [existing] = await db
+      .select({ id: answerGenerationJobs.id })
+      .from(answerGenerationJobs)
+      .where(eq(answerGenerationJobs.id, id));
+    return existing
+      ? Response.json(
+          { error: "任务正在生成中，请停止后再修改设置" },
+          { status: 409 }
+        )
+      : Response.json({ error: "Job not found" }, { status: 404 });
   }
 
   if (input.applyMode === "regenerate_all") {

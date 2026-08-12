@@ -10,7 +10,7 @@ import type {
   RubricSchemaV1
 } from "@answer-generator/shared";
 import { Queue, QueueEvents, Worker } from "bullmq";
-import { and, eq, inArray, ne } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { loadProjectEnv } from "./env";
 
 loadProjectEnv();
@@ -18,6 +18,7 @@ loadProjectEnv();
 interface RunJobPayload {
   jobId: string;
   itemId?: string;
+  compilationId: string;
 }
 
 interface GenerateAnswerResponse {
@@ -57,22 +58,35 @@ const worker = new Worker<RunJobPayload>(
   "answer-generation",
   async (queueJob) => {
     if (queueJob.data.itemId) {
-      await runSingleItem(queueJob.data.jobId, queueJob.data.itemId);
+      await runSingleItem(
+        queueJob.data.jobId,
+        queueJob.data.itemId,
+        queueJob.data.compilationId
+      );
       return;
     }
 
-    const current = await getJob(queueJob.data.jobId);
-    if (!current || current.status === "cancelled") {
+    if (!queueJob.data.compilationId) {
       return;
     }
 
     const [job] = await db
       .update(answerGenerationJobs)
-      .set({ status: "running", startedAt: current.startedAt ?? new Date(), completedAt: null, updatedAt: new Date() })
-      .where(and(eq(answerGenerationJobs.id, queueJob.data.jobId), ne(answerGenerationJobs.status, "cancelled")))
+      .set({
+        status: "running",
+        completedAt: null,
+        updatedAt: new Date()
+      })
+      .where(
+        and(
+          eq(answerGenerationJobs.id, queueJob.data.jobId),
+          eq(answerGenerationJobs.status, "queued"),
+          compilationTokenMatches(queueJob.data.compilationId)
+        )
+      )
       .returning();
 
-    if (!job || job.status === "cancelled") {
+    if (!job) {
       return;
     }
 
@@ -247,9 +261,27 @@ const worker = new Worker<RunJobPayload>(
   }
 );
 
-async function runSingleItem(jobId: string, itemId: string) {
-  const job = await getJob(jobId);
-  if (!job || job.status === "cancelled") {
+async function runSingleItem(
+  jobId: string,
+  itemId: string,
+  compilationId: string
+) {
+  if (!compilationId) {
+    return;
+  }
+
+  const [job] = await db
+    .update(answerGenerationJobs)
+    .set({ status: "running", completedAt: null, updatedAt: new Date() })
+    .where(
+      and(
+        eq(answerGenerationJobs.id, jobId),
+        eq(answerGenerationJobs.status, "queued"),
+        compilationTokenMatches(compilationId)
+      )
+    )
+    .returning();
+  if (!job) {
     return;
   }
 
@@ -308,7 +340,7 @@ async function runSingleItem(jobId: string, itemId: string) {
         errorMessage: error instanceof Error ? error.message : "生成失败"
       });
       await db.update(answerGenerationItems).set({ status: "failed", updatedAt: new Date() }).where(eq(answerGenerationItems.id, item.id));
-      await updateJobFinalStatus(job.id);
+      await updateJobFinalStatus(job.id, compilationId);
       return;
     }
 
@@ -355,7 +387,7 @@ async function runSingleItem(jobId: string, itemId: string) {
             updatedAt: new Date()
           })
           .where(eq(answerGenerationItems.id, item.id));
-        await updateJobFinalStatus(job.id);
+        await updateJobFinalStatus(job.id, compilationId);
         return;
       }
 
@@ -372,7 +404,7 @@ async function runSingleItem(jobId: string, itemId: string) {
         .where(eq(answerGenerationItems.id, item.id));
 
       if (attemptNumber >= job.maxAttempts) {
-        await updateJobFinalStatus(job.id);
+        await updateJobFinalStatus(job.id, compilationId);
         return;
       }
     } catch (error) {
@@ -381,7 +413,7 @@ async function runSingleItem(jobId: string, itemId: string) {
         .set({ status: "failed", errorMessage: error instanceof Error ? error.message : "审核失败" })
         .where(eq(answerGenerationAttempts.id, attemptId));
       await db.update(answerGenerationItems).set({ status: "failed", updatedAt: new Date() }).where(eq(answerGenerationItems.id, item.id));
-      await updateJobFinalStatus(job.id);
+      await updateJobFinalStatus(job.id, compilationId);
       return;
     }
   }
@@ -490,6 +522,10 @@ function toLegacyRubricSchema(
   return schema;
 }
 
+function compilationTokenMatches(compilationId: string) {
+  return sql`${answerGenerationJobs.rubricCompilation}->'details'->>'compilationId' = ${compilationId}`;
+}
+
 async function getJob(jobId: string) {
   const [job] = await db
     .select()
@@ -524,12 +560,7 @@ async function markRunningItemsNeedsReview(jobId: string) {
     .where(and(eq(answerGenerationItems.jobId, jobId), inArray(answerGenerationItems.status, ["generating", "reviewing"])));
 }
 
-async function updateJobFinalStatus(jobId: string) {
-  const job = await getJob(jobId);
-  if (!job || job.status === "cancelled" || job.status === "running" || job.status === "queued") {
-    return;
-  }
-
+async function updateJobFinalStatus(jobId: string, compilationId: string) {
   const finalItems = await db
     .select()
     .from(answerGenerationItems)
@@ -538,7 +569,13 @@ async function updateJobFinalStatus(jobId: string) {
   await db
     .update(answerGenerationJobs)
     .set({ status: allPassed ? "completed" : "needs_review", completedAt: new Date(), updatedAt: new Date() })
-    .where(eq(answerGenerationJobs.id, jobId));
+    .where(
+      and(
+        eq(answerGenerationJobs.id, jobId),
+        eq(answerGenerationJobs.status, "running"),
+        compilationTokenMatches(compilationId)
+      )
+    );
 }
 
 async function clearItemAttempts(itemId: string) {

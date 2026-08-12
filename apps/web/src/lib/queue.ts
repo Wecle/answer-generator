@@ -30,7 +30,7 @@ export async function isGenerationWorkerOnline() {
   }
 }
 
-export async function enqueueGenerationJob(jobId: string) {
+export async function enqueueGenerationJob(jobId: string, compilationId: string) {
   if (!process.env.REDIS_URL) {
     return { enqueued: false, workerOnline: false };
   }
@@ -42,7 +42,7 @@ export async function enqueueGenerationJob(jobId: string) {
   try {
     const client = await queue.client;
     const workerOnline = Boolean(await client.get(WORKER_HEARTBEAT_KEY));
-    await queue.add("run-job", { jobId }, {
+    await queue.add("run-job", { jobId, compilationId }, {
       attempts: 2,
       backoff: { type: "exponential", delay: 5000 },
       jobId: `answer-generation-${jobId}`,
@@ -56,7 +56,11 @@ export async function enqueueGenerationJob(jobId: string) {
   }
 }
 
-export async function enqueueGenerationItem(jobId: string, itemId: string) {
+export async function enqueueGenerationItem(
+  jobId: string,
+  itemId: string,
+  compilationId: string
+) {
   if (!process.env.REDIS_URL) {
     return { enqueued: false, workerOnline: false };
   }
@@ -68,7 +72,7 @@ export async function enqueueGenerationItem(jobId: string, itemId: string) {
   try {
     const client = await queue.client;
     const workerOnline = Boolean(await client.get(WORKER_HEARTBEAT_KEY));
-    await queue.add("run-item", { jobId, itemId }, {
+    await queue.add("run-item", { jobId, itemId, compilationId }, {
       attempts: 2,
       backoff: { type: "exponential", delay: 5000 },
       jobId: `answer-generation-${jobId}-item-${itemId}`,

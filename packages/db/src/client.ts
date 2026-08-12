@@ -20,3 +20,4 @@ export function createDb(databaseUrl = process.env.DATABASE_URL) {
 }
 
 export type DbClient = ReturnType<typeof createDb>;
+export type DbExecutor = Pick<DbClient, "select" | "insert" | "update" | "delete">;

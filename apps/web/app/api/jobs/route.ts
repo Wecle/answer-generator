@@ -29,6 +29,10 @@ export async function POST(request: Request) {
       rubric: input.rubric,
       compiledPrompt: null,
       rubricSchema: null,
+      rubricCompilation: {
+        stage: "extracting_requirements",
+        updatedAt: new Date().toISOString()
+      },
       answerMinutes: String(input.answerMinutes),
       passingScore: input.passingScore,
       maxAttempts: input.maxAttempts,

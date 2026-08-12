@@ -2,11 +2,11 @@ import {
   answerGenerationAttempts,
   answerGenerationItems,
   answerGenerationReviews,
-  type DbClient
+  type DbExecutor
 } from "@answer-generator/db";
 import { and, eq, inArray, ne } from "drizzle-orm";
 
-export async function resetJobResults(db: DbClient, jobId: string, scope: "retryable" | "all" = "retryable") {
+export async function resetJobResults(db: DbExecutor, jobId: string, scope: "retryable" | "all" = "retryable") {
   const allItems = await db.select().from(answerGenerationItems).where(eq(answerGenerationItems.jobId, jobId));
   const items =
     scope === "all"
@@ -44,7 +44,7 @@ export async function resetJobResults(db: DbClient, jobId: string, scope: "retry
   return { resetItems: itemIds.length, totalItems: allItems.length };
 }
 
-export async function resetJobItemResult(db: DbClient, jobId: string, itemId: string) {
+export async function resetJobItemResult(db: DbExecutor, jobId: string, itemId: string) {
   const [item] = await db
     .select()
     .from(answerGenerationItems)
@@ -80,7 +80,7 @@ export async function resetJobItemResult(db: DbClient, jobId: string, itemId: st
 }
 
 export async function updatePendingItemTargets(
-  db: DbClient,
+  db: DbExecutor,
   jobId: string,
   range: { minWords: number; targetWords: number; maxWords: number }
 ) {
