@@ -43,6 +43,13 @@
       "when": 1781683200000,
       "tag": "0005_add_compiling_rubric_status",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786530541152,
+      "tag": "0006_add_rubric_pipeline_metadata",
+      "breakpoints": true
     }
   ]
 }

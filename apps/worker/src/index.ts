@@ -5,6 +5,10 @@ import {
   answerGenerationReviews,
   createDb
 } from "@answer-generator/db";
+import type {
+  PersistedRubricSchema,
+  RubricSchemaV1
+} from "@answer-generator/shared";
 import { Queue, QueueEvents, Worker } from "bullmq";
 import { and, eq, inArray, ne } from "drizzle-orm";
 import { loadProjectEnv } from "./env";
@@ -28,14 +32,6 @@ interface ReviewAnswerResponse {
   dimensions: Array<{ name: string; score: number; max_score: number }>;
   reasons: string[];
   reviewer_model: string;
-}
-
-interface RubricSchema {
-  rolePrompt: string;
-  answerPrinciples: string[];
-  dimensions: Array<{ name: string; maxScore: number; criteria: string[]; pitfalls: string[] }>;
-  retryPolicy: string[];
-  outputRules: string[];
 }
 
 interface GeneratedAttempt {
@@ -121,7 +117,7 @@ const worker = new Worker<RunJobPayload>(
             question: item.question,
             rubric: job.rubric,
             compiledPrompt: job.compiledPrompt,
-            rubricSchema: job.rubricSchema,
+            rubricSchema: toLegacyRubricSchema(job.rubricSchema),
             answerMinutes: Number(job.answerMinutes),
             targetWords: item.targetWords,
             previousFeedback: feedbackByItem.get(item.id) ?? []
@@ -173,7 +169,7 @@ const worker = new Worker<RunJobPayload>(
             material: generated.material,
             question: generated.question,
             rubric: job.rubric,
-            rubricSchema: job.rubricSchema,
+            rubricSchema: toLegacyRubricSchema(job.rubricSchema),
             answer: generated.answer,
             passingScore: job.passingScore
           });
@@ -285,7 +281,7 @@ async function runSingleItem(jobId: string, itemId: string) {
         question: item.question,
         rubric: job.rubric,
         compiledPrompt: job.compiledPrompt,
-        rubricSchema: job.rubricSchema,
+        rubricSchema: toLegacyRubricSchema(job.rubricSchema),
         answerMinutes: Number(job.answerMinutes),
         targetWords: item.targetWords,
         previousFeedback: feedback
@@ -328,7 +324,7 @@ async function runSingleItem(jobId: string, itemId: string) {
         material: item.material,
         question: item.question,
         rubric: job.rubric,
-        rubricSchema: job.rubricSchema,
+        rubricSchema: toLegacyRubricSchema(job.rubricSchema),
         answer: generated.answer,
         passingScore: job.passingScore
       });
@@ -415,7 +411,7 @@ async function generateAnswer(input: {
   question: string;
   rubric: string;
   compiledPrompt: string | null;
-  rubricSchema: RubricSchema | null;
+  rubricSchema: RubricSchemaV1 | null;
   answerMinutes: number;
   targetWords: number;
   previousFeedback: string[];
@@ -446,7 +442,7 @@ async function reviewAnswer(input: {
   material: string | null;
   question: string;
   rubric: string;
-  rubricSchema: RubricSchema | null;
+  rubricSchema: RubricSchemaV1 | null;
   answer: string;
   passingScore: number;
 }) {
@@ -470,7 +466,7 @@ async function reviewAnswer(input: {
   return (await response.json()) as ReviewAnswerResponse;
 }
 
-function toApiRubricSchema(schema: RubricSchema) {
+function toApiRubricSchema(schema: RubricSchemaV1) {
   return {
     role_prompt: schema.rolePrompt,
     answer_principles: schema.answerPrinciples,
@@ -483,6 +479,15 @@ function toApiRubricSchema(schema: RubricSchema) {
     retry_policy: schema.retryPolicy,
     output_rules: schema.outputRules
   };
+}
+
+function toLegacyRubricSchema(
+  schema: PersistedRubricSchema | null
+): RubricSchemaV1 | null {
+  if (!schema || "version" in schema) {
+    return null;
+  }
+  return schema;
 }
 
 async function getJob(jobId: string) {

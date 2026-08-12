@@ -9,6 +9,13 @@ import {
   timestamp,
   uuid
 } from "drizzle-orm/pg-core";
+import type {
+  FailedCriterion,
+  PersistedReviewDimensionRecord,
+  PersistedRubricSchema,
+  PromptMetadata,
+  RubricCompilationState
+} from "@answer-generator/shared";
 
 export const jobStatus = pgEnum("generation_job_status", [
   "compiling_rubric",
@@ -47,13 +54,8 @@ export const answerGenerationJobs = pgTable("answer_generation_jobs", {
   title: text("title").notNull(),
   rubric: text("rubric").notNull(),
   compiledPrompt: text("compiled_prompt"),
-  rubricSchema: jsonb("rubric_schema").$type<{
-    rolePrompt: string;
-    answerPrinciples: string[];
-    dimensions: Array<{ name: string; maxScore: number; criteria: string[]; pitfalls: string[] }>;
-    retryPolicy: string[];
-    outputRules: string[];
-  }>(),
+  rubricSchema: jsonb("rubric_schema").$type<PersistedRubricSchema>(),
+  rubricCompilation: jsonb("rubric_compilation").$type<RubricCompilationState>(),
   answerMinutes: numeric("answer_minutes", { precision: 4, scale: 1 }).notNull(),
   passingScore: integer("passing_score").notNull().default(95),
   maxAttempts: integer("max_attempts").notNull().default(3),
@@ -100,6 +102,7 @@ export const answerGenerationAttempts = pgTable("answer_generation_attempts", {
   attemptNumber: integer("attempt_number").notNull(),
   status: attemptStatus("status").notNull().default("generated"),
   promptVersion: text("prompt_version").notNull().default("v1"),
+  promptMetadata: jsonb("prompt_metadata").$type<PromptMetadata>(),
   model: text("model").notNull(),
   answer: text("answer"),
   errorMessage: text("error_message"),
@@ -111,7 +114,9 @@ export const answerGenerationReviews = pgTable("answer_generation_reviews", {
   attemptId: uuid("attempt_id").notNull().references(() => answerGenerationAttempts.id, { onDelete: "cascade" }),
   totalScore: integer("total_score").notNull(),
   passed: boolean("passed").notNull(),
-  dimensions: jsonb("dimensions").notNull().$type<Array<{ name: string; score: number; maxScore: number }>>(),
+  dimensions: jsonb("dimensions").notNull().$type<PersistedReviewDimensionRecord[]>(),
+  failedCriteria: jsonb("failed_criteria").notNull().default([]).$type<FailedCriterion[]>(),
+  preservedCriteriaIds: jsonb("preserved_criteria_ids").notNull().default([]).$type<string[]>(),
   reasons: jsonb("reasons").notNull().$type<string[]>(),
   reviewerModel: text("reviewer_model").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
