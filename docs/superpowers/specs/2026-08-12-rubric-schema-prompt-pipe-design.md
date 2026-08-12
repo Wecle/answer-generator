@@ -77,6 +77,18 @@ flowchart TD
       "id": "REQ-001",
       "text": "能够从群众、制度和执行层面分析原因",
       "kind": "criterion"
+    },
+    {
+      "id": "REQ-003",
+      "text": "答案必须结合基层工作实际",
+      "kind": "global"
+    }
+  ],
+  "global_constraints": [
+    {
+      "id": "GLB-001",
+      "text": "答案必须结合基层工作实际",
+      "source_requirement_ids": ["REQ-003"]
     }
   ],
   "dimensions": [
@@ -133,7 +145,8 @@ flowchart TD
 
 ### 4.3 映射规则
 
-- 每条 `source_requirement` 至少被一个 dimension、criterion、pitfall 或全局原则引用。
+- 每条 `source_requirement` 至少被一个 dimension、criterion、pitfall 或全局约束引用。
+- 原始 Rubric 中适用于全部维度的业务要求进入结构化 `global_constraints`；系统固定角色和输出格式仍放在基础 Prompt，不伪装成原始要求。
 - 每个 criterion 和 pitfall 至少引用一条原始要求。
 - 一个原始要求允许映射到多个位置，但生成阶段应去重呈现。
 - 模型推导出的通用措辞不能伪装成原文要求；如果属于系统固定规则，应放入基础 Prompt，而不是 `source_requirements`。
