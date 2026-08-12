@@ -1,33 +1,46 @@
 import json
 import os
-from typing import Any
+from typing import Any, Optional
 
 import httpx
+from pydantic import ValidationError
 
-from app.models import CompileRubricRequest, CompileRubricResponse, RubricDimensionSchema, RubricSchema
+from app.models import (
+    CompileRubricRequest,
+    CompileRubricResponse,
+    CoverageAuditResult,
+    RubricSchemaV2,
+)
+from app.services.rubric_schema import (
+    RubricSchemaValidationError,
+    validate_rubric_schema,
+)
 
-
-DEFAULT_ROLE_PROMPT = "你是一名参加公务员结构化面试的考生，需要生成符合评分标准、适合现场口述的文字参考答案。"
-
-DEFAULT_ANSWER_PRINCIPLES = [
-    "只围绕用户评分标准展开，不引入无关评分维度。",
-    "每个评分维度都要有对应观点、分析或做法。",
-    "答案需要适合规定时间内口述，表达自然、层次清楚。",
-]
-
-DEFAULT_RETRY_POLICY = [
-    "低分重试时优先修复审核指出的低分维度和缺失条目。",
-    "保留已覆盖的高分内容，定向改写低分段落。",
-    "重试答案仍需保持自然口述，不输出评分表述、批注或舞台提示。",
-]
-
-DEFAULT_OUTPUT_RULES = [
-    "输出纯文本。",
-    "不使用 Markdown。",
-    "多题目时按“第 1 题”分段。",
-]
 
 DEFAULT_OPENAI_TIMEOUT_SECONDS = 180
+
+
+class RubricCompilationError(RuntimeError):
+    def __init__(
+        self,
+        stage: str,
+        code: str,
+        message: str,
+        details: Optional[dict] = None,
+    ):
+        super().__init__(message)
+        self.stage = stage
+        self.code = code
+        self.message = message
+        self.details = details or {}
+
+    def as_dict(self) -> dict:
+        return {
+            "stage": self.stage,
+            "code": self.code,
+            "message": self.message,
+            "details": self.details,
+        }
 
 
 async def compile_rubric(request: CompileRubricRequest) -> CompileRubricResponse:
@@ -38,71 +51,163 @@ async def compile_rubric(request: CompileRubricRequest) -> CompileRubricResponse
     return await _compile_with_openai(request, api_key)
 
 
-async def _compile_with_openai(request: CompileRubricRequest, api_key: str) -> CompileRubricResponse:
+async def _compile_with_openai(
+    request: CompileRubricRequest, api_key: str
+) -> CompileRubricResponse:
     base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    prompt = _build_compile_prompt(request)
 
     async with httpx.AsyncClient(timeout=_openai_timeout_seconds()) as client:
-        data = await _post_json_completion(client, base_url, model, api_key, prompt)
+        schema = await _run_compile_stage(
+            "compiling_schema",
+            _compile_candidate(client, base_url, model, api_key, request),
+        )
+        repair_used = False
 
         try:
-            schema = _schema_from_data(data, request)
-        except ValueError as error:
-            repair_prompt = _build_repair_prompt(request, data, str(error))
-            repaired_data = await _post_json_completion(client, base_url, model, api_key, repair_prompt)
-            schema = _schema_from_data(repaired_data, request)
+            validate_rubric_schema(schema)
+        except RubricSchemaValidationError as error:
+            schema = await _run_compile_stage(
+                "repairing_schema",
+                _repair_candidate(
+                    client,
+                    base_url,
+                    model,
+                    api_key,
+                    request,
+                    schema,
+                    {"code": error.code, "details": error.details},
+                ),
+            )
+            repair_used = True
+            _validate_repaired_schema(schema)
 
+        audit_stage = (
+            "auditing_repaired_schema" if repair_used else "auditing_coverage"
+        )
+        audit = await _run_compile_stage(
+            audit_stage,
+            _audit_candidate(client, base_url, model, api_key, request, schema),
+        )
+        _validate_audit_result(audit_stage, audit)
+        if not audit.passed:
+            if repair_used:
+                raise _coverage_failure("auditing_repaired_schema", audit)
+
+            schema = await _run_compile_stage(
+                "repairing_schema",
+                _repair_candidate(
+                    client,
+                    base_url,
+                    model,
+                    api_key,
+                    request,
+                    schema,
+                    audit.model_dump(),
+                ),
+            )
+            repair_used = True
+            _validate_repaired_schema(schema)
+            audit = await _run_compile_stage(
+                "auditing_repaired_schema",
+                _audit_candidate(
+                    client, base_url, model, api_key, request, schema
+                ),
+            )
+            _validate_audit_result("auditing_repaired_schema", audit)
+            if not audit.passed:
+                raise _coverage_failure("auditing_repaired_schema", audit)
+
+    schema.compilation.compiler_model = model
+    schema.compilation.auditor_model = model
+    schema.compilation.coverage_passed = True
     return CompileRubricResponse(
-        compiled_prompt=_build_compiled_prompt(schema, request),
         rubric_schema=schema,
         compiler_model=model,
+        auditor_model=model,
     )
 
 
-def _build_compile_prompt(request: CompileRubricRequest) -> str:
-    return (
-        "请根据以下公务员面试评分标准，自行理解其真实评分结构，编译成稳定的答案生成与文字稿审核规则。只输出 JSON。\n"
-        "JSON 字段：role_prompt, answer_principles, dimensions, retry_policy, output_rules。\n"
-        "dimensions 每项字段：name, max_score, criteria, pitfalls。\n"
-        "严格要求：每个 dimension 都必须包含非空 name、正整数 max_score、非空 criteria 数组、非空 pitfalls 数组。"
-        "维度和分值必须来自用户评分标准；不要新增评分维度；criteria 只保留可执行得分点。"
-        "评分标准可能是 Markdown、表格、散文、分档描述或混合格式，你必须基于语义识别真正的评分维度，"
-        "不得把优/良/中/差等等级行、表格行、说明性标题、总则或示例误当成独立评分维度。\n\n"
-        "重要约束：本系统生成和审核的是文字参考答案，不处理真实音频。"
-        "如果评分标准包含语音表达、流畅度、语速语调等维度，需要转换成文字稿可评估的口述潜力要求，"
-        "例如语句是否适合朗读、层次停顿是否清晰、篇幅是否符合答题时间、表达是否自然。"
-        "不得把 role_prompt 写成录音评卷考官。\n\n"
-        f"答题时间：{request.answer_minutes} 分钟\n"
-        f"通过分数：{request.passing_score}\n"
-        f"评分标准：\n{request.rubric}"
+async def _compile_candidate(
+    client: httpx.AsyncClient,
+    base_url: str,
+    model: str,
+    api_key: str,
+    request: CompileRubricRequest,
+) -> RubricSchemaV2:
+    data = await _post_json_completion(
+        client,
+        base_url,
+        model,
+        api_key,
+        _build_compile_prompt(request),
+        "你是公务员面试评分标准编译器。",
     )
+    schema = RubricSchemaV2.model_validate(data)
+    schema.compilation.compiler_model = model
+    schema.compilation.auditor_model = None
+    schema.compilation.coverage_passed = False
+    return schema
 
 
-def _build_repair_prompt(request: CompileRubricRequest, invalid_data: dict[str, Any], error_message: str) -> str:
-    return (
-        "请修复下面这份公务员面试评分标准编译 JSON。只输出修复后的完整 JSON，不要解释。\n"
-        "修复要求：\n"
-        "1. 保持 AI 对真实评分结构的语义理解，不使用规则模板或关键词硬切。\n"
-        "2. 每个 dimension 必须包含非空 name、正整数 max_score、非空 criteria 数组、非空 pitfalls 数组。\n"
-        "3. criteria 必须写成可执行得分点；pitfalls 必须写成该维度常见失分点。\n"
-        "4. 不得把优/良/中/差等等级行、表格行、说明性标题、总则或示例误当成独立评分维度。\n\n"
-        f"校验错误：{error_message}\n"
-        f"答题时间：{request.answer_minutes} 分钟\n"
-        f"通过分数：{request.passing_score}\n"
-        f"原始评分标准：\n{request.rubric}\n\n"
-        f"待修复 JSON：\n{json.dumps(invalid_data, ensure_ascii=False)}"
+async def _audit_candidate(
+    client: httpx.AsyncClient,
+    base_url: str,
+    model: str,
+    api_key: str,
+    request: CompileRubricRequest,
+    schema: RubricSchemaV2,
+) -> CoverageAuditResult:
+    data = await _post_json_completion(
+        client,
+        base_url,
+        model,
+        api_key,
+        _build_audit_prompt(request, schema),
+        "你是独立的评分标准覆盖审计员，只以用户原始评分标准为依据。",
     )
+    return CoverageAuditResult.model_validate(data)
 
 
-async def _post_json_completion(client: httpx.AsyncClient, base_url: str, model: str, api_key: str, prompt: str) -> dict[str, Any]:
+async def _repair_candidate(
+    client: httpx.AsyncClient,
+    base_url: str,
+    model: str,
+    api_key: str,
+    request: CompileRubricRequest,
+    schema: RubricSchemaV2,
+    errors: dict,
+) -> RubricSchemaV2:
+    data = await _post_json_completion(
+        client,
+        base_url,
+        model,
+        api_key,
+        _build_repair_prompt(request, schema, errors),
+        "你是评分标准 Schema 定向修复器，只修复报告指出的问题。",
+    )
+    repaired = RubricSchemaV2.model_validate(data)
+    repaired.compilation.compiler_model = model
+    repaired.compilation.auditor_model = None
+    repaired.compilation.coverage_passed = False
+    return repaired
+
+
+async def _post_json_completion(
+    client: httpx.AsyncClient,
+    base_url: str,
+    model: str,
+    api_key: str,
+    prompt: str,
+    system_prompt: str,
+) -> dict[str, Any]:
     response = await client.post(
         f"{base_url}/chat/completions",
         headers={"Authorization": f"Bearer {api_key}"},
         json={
             "model": model,
             "messages": [
-                {"role": "system", "content": "你是公务员面试评分标准编译器。"},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.1,
@@ -110,85 +215,121 @@ async def _post_json_completion(client: httpx.AsyncClient, base_url: str, model:
         },
     )
     response.raise_for_status()
-    payload = response.json()
-    content = payload["choices"][0]["message"]["content"]
+    content = response.json()["choices"][0]["message"]["content"]
     return json.loads(content)
 
-def _schema_from_data(data: dict[str, Any], request: CompileRubricRequest) -> RubricSchema:
-    dimensions = data.get("dimensions")
-    if not isinstance(dimensions, list) or not dimensions:
-        raise ValueError("AI rubric schema must include non-empty dimensions.")
 
-    parsed_dimensions = [_dimension_from_data(item) for item in dimensions if isinstance(item, dict)]
-    if not parsed_dimensions:
-        raise ValueError("AI rubric schema dimensions are invalid.")
-
-    role_prompt = str(data.get("role_prompt") or "").strip() or DEFAULT_ROLE_PROMPT
-    answer_principles = _string_list(data.get("answer_principles")) or DEFAULT_ANSWER_PRINCIPLES
-    retry_policy = _string_list(data.get("retry_policy")) or DEFAULT_RETRY_POLICY
-    output_rules = _string_list(data.get("output_rules")) or DEFAULT_OUTPUT_RULES
-
-    return RubricSchema(
-        role_prompt=role_prompt,
-        answer_principles=answer_principles,
-        dimensions=parsed_dimensions,
-        retry_policy=retry_policy,
-        output_rules=output_rules,
+def _build_compile_prompt(request: CompileRubricRequest) -> str:
+    return (
+        "请一次完成原子要求提取与 RubricSchema v2 编译，只输出完整 JSON，不要解释。\n"
+        "必须返回 version=v2、role_prompt、source_requirements、global_constraints、dimensions、"
+        "answer_principles、retry_policy、output_rules 和 compilation。\n"
+        "source_requirements 的 kind 只能是 dimension、criterion、pitfall、score、global；"
+        "每条原子要求必须通过 source_requirement_ids 映射到维度、criterion、pitfall 或全局约束。\n"
+        "每个维度必须有稳定 DIM ID、唯一非空名称、正整数 max_score、至少一个 criterion 和 pitfall；"
+        "criterion 与 pitfall 使用稳定 CRI/PIT ID 且必须映射来源。所有维度分值总和必须为 100。\n"
+        "原文完全没有分值时才可推断权重并设置 inferred_scores=true；部分分值、冲突分值或"
+        "明确分值总和有歧义时不得静默补全。coverage_passed 必须为 false，auditor_model 必须为 null。\n"
+        "档位描述中的重复表达应归并，不得把优/良/中/差本身提取成维度；不得新增原文不支持的业务要求。\n\n"
+        f"答题时间：{request.answer_minutes} 分钟\n"
+        "通过分数仅用于生成后的运行判断，不得提取为原子要求，也不得用于维度权重推断。\n"
+        f"原始评分标准：\n{request.rubric}"
     )
 
 
-def _build_compiled_prompt(schema: RubricSchema, request: CompileRubricRequest) -> str:
-    dimension_lines = []
-    for dimension in schema.dimensions:
-        criteria = "；".join(dimension.criteria) if dimension.criteria else "覆盖该维度要求"
-        dimension_lines.append(f"- {dimension.name}（{dimension.max_score}分）：{criteria}")
-
-    return "\n".join(
-        [
-            schema.role_prompt,
-            f"答题时间为 {request.answer_minutes} 分钟，通过分数为 {request.passing_score} 分。",
-            "作答原则：",
-            *[f"- {item}" for item in schema.answer_principles],
-            "评分维度：",
-            *dimension_lines,
-            "重试规则：",
-            *[f"- {item}" for item in schema.retry_policy],
-            "输出规则：",
-            *[f"- {item}" for item in schema.output_rules],
-        ]
+def _build_audit_prompt(
+    request: CompileRubricRequest, schema: RubricSchemaV2
+) -> str:
+    return (
+        "请独立审计候选 Schema 是否完整、忠实地覆盖原始评分标准。只输出 CoverageAuditResult JSON。\n"
+        "不得沿用编译器结论；逐项检查遗漏、无原文依据的新增内容、语义弱化和分值问题。"
+        "原文完全无分值时才允许 inferred_scores=true；原文部分有分值、分值冲突或明确分值总和不正确时"
+        "必须写入 score_issues。\n"
+        "确定性校验摘要：候选 Schema 的 ID、引用、映射和 100 分总分校验已通过。\n\n"
+        f"原始评分标准：\n{request.rubric}\n\n"
+        f"提取出的原子要求：\n{json.dumps([item.model_dump() for item in schema.source_requirements], ensure_ascii=False)}\n\n"
+        f"候选 Schema：\n{schema.model_dump_json()}"
     )
 
 
-def _dimension_from_data(item: dict[str, Any]) -> RubricDimensionSchema:
-    name = str(item.get("name") or "").strip()
-    max_score = _positive_int(item.get("max_score"))
-    criteria = _string_list(item.get("criteria"))
-    pitfalls = _string_list(item.get("pitfalls"))
-
-    if not name:
-        raise ValueError("AI rubric schema dimensions must include name.")
-    if max_score <= 0:
-        raise ValueError(f"AI rubric schema dimension {name} must include positive max_score.")
-    if not criteria:
-        raise ValueError(f"AI rubric schema dimension {name} must include criteria.")
-    if not pitfalls:
-        raise ValueError(f"AI rubric schema dimension {name} must include pitfalls.")
-
-    return RubricDimensionSchema(name=name, max_score=max_score, criteria=criteria, pitfalls=pitfalls)
+def _build_repair_prompt(
+    request: CompileRubricRequest, schema: RubricSchemaV2, errors: dict
+) -> str:
+    return (
+        "只修复校验或审计报告指出的问题，保留其余已验证内容。输出完整 RubricSchema v2 JSON。\n"
+        "不得新增修复报告未要求的业务规则；coverage_passed 必须保持 false。\n\n"
+        f"原始评分标准：\n{request.rubric}\n\n"
+        f"候选 Schema：\n{schema.model_dump_json()}\n\n"
+        f"修复报告：\n{json.dumps(errors, ensure_ascii=False)}"
+    )
 
 
-def _positive_int(value: Any) -> int:
+async def _run_compile_stage(stage: str, operation):
     try:
-        number = int(value)
-    except (TypeError, ValueError):
-        return 0
-    return number if number > 0 else 0
+        return await operation
+    except RubricCompilationError:
+        raise
+    except httpx.TimeoutException as error:
+        raise RubricCompilationError(
+            stage,
+            "AI_SERVICE_TIMEOUT",
+            "评分标准分析模型调用超时",
+            {"error": str(error)},
+        ) from error
+    except httpx.HTTPError as error:
+        raise RubricCompilationError(
+            stage,
+            "AI_SERVICE_ERROR",
+            "评分标准分析模型调用失败",
+            {"error": str(error)},
+        ) from error
+    except (json.JSONDecodeError, ValidationError, KeyError, IndexError, TypeError) as error:
+        raise RubricCompilationError(
+            stage,
+            "INVALID_MODEL_RESPONSE",
+            "评分标准分析模型返回了无法解析的内容",
+            {"error": str(error)},
+        ) from error
 
 
-def _string_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [str(item).strip() for item in value if str(item).strip()]
+def _validate_repaired_schema(schema: RubricSchemaV2) -> None:
+    try:
+        validate_rubric_schema(schema)
+    except RubricSchemaValidationError as error:
+        raise RubricCompilationError(
+            "validating_schema",
+            error.code,
+            "修复后的评分标准仍未通过确定性校验",
+            error.details,
+        ) from error
+
+
+def _coverage_failure(
+    stage: str, audit: CoverageAuditResult
+) -> RubricCompilationError:
+    return RubricCompilationError(
+        stage,
+        "COVERAGE_AUDIT_FAILED",
+        "评分标准覆盖审计失败",
+        audit.model_dump(),
+    )
+
+
+def _validate_audit_result(stage: str, audit: CoverageAuditResult) -> None:
+    reported_issues = bool(
+        audit.missing_requirement_ids
+        or audit.unsupported_schema_paths
+        or audit.conflicts
+        or audit.score_issues
+        or audit.repair_instructions
+    )
+    if audit.passed == reported_issues:
+        raise RubricCompilationError(
+            stage,
+            "INVALID_MODEL_RESPONSE",
+            "覆盖审计结论与问题明细相互矛盾",
+            audit.model_dump(),
+        )
 
 
 def _openai_timeout_seconds() -> int:

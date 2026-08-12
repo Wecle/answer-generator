@@ -1,134 +1,28 @@
+import json
+
+import httpx
 import pytest
 
 from app.models import CompileRubricRequest
+from app.services.rubric_compiler import (
+    RubricCompilationError,
+    _compile_with_openai,
+    compile_rubric,
+)
 import app.services.rubric_compiler as rubric_compiler
-from app.services.rubric_compiler import _compile_with_openai, _schema_from_data, compile_rubric
+from tests.rubric_fixtures import valid_schema_data
 
 
-@pytest.mark.asyncio
-async def test_compile_rubric_requires_ai_configuration(monkeypatch):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-
-    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
-        await compile_rubric(
-            CompileRubricRequest(
-                rubric="审题准确度15分，论证思维20分。",
-                answer_minutes=3,
-                passing_score=95,
-            )
-        )
-
-
-def test_schema_from_data_rejects_invalid_ai_schema_without_local_fallback():
-    request = CompileRubricRequest(
-        rubric="#### 维度一：审题准确度（满分15分）\n| 优 | 13-15分 | 完全切题 |",
-        answer_minutes=3,
+def make_request() -> CompileRubricRequest:
+    return CompileRubricRequest(
+        rubric="综合分析50分，解决问题50分。",
+        answer_minutes=2,
         passing_score=95,
     )
 
-    with pytest.raises(ValueError, match="dimensions"):
-        _schema_from_data({"dimensions": []}, request)
 
-
-def test_schema_from_data_accepts_ai_analyzed_dimensions():
-    request = CompileRubricRequest(
-        rubric="任意格式评分标准，由 AI 自行理解。",
-        answer_minutes=3,
-        passing_score=95,
-    )
-
-    schema = _schema_from_data(
-        {
-            "role_prompt": "你是一名结构化面试考生。",
-            "answer_principles": ["围绕题目作答。"],
-            "dimensions": [
-                {
-                    "name": "审题准确度",
-                    "max_score": 15,
-                    "criteria": ["准确把握题目核心任务"],
-                    "pitfalls": ["偏离题意"],
-                },
-                {
-                    "name": "论证思维",
-                    "max_score": 20,
-                    "criteria": ["结构清楚，逻辑递进"],
-                    "pitfalls": ["层次混乱"],
-                },
-            ],
-            "retry_policy": ["只修复低分维度。"],
-            "output_rules": ["输出纯文本。"],
-        },
-        request,
-    )
-
-    assert [dimension.name for dimension in schema.dimensions] == ["审题准确度", "论证思维"]
-    assert [dimension.max_score for dimension in schema.dimensions] == [15, 20]
-
-
-def test_schema_from_data_uses_system_policy_when_ai_omits_retry_policy():
-    request = CompileRubricRequest(
-        rubric="任意格式评分标准，由 AI 自行理解。",
-        answer_minutes=3,
-        passing_score=95,
-    )
-
-    schema = _schema_from_data(
-        {
-            "role_prompt": "你是一名结构化面试考生。",
-            "answer_principles": ["围绕题目作答。"],
-            "dimensions": [
-                {
-                    "name": "审题准确度",
-                    "max_score": 15,
-                    "criteria": ["准确把握题目核心任务"],
-                    "pitfalls": ["偏离题意"],
-                }
-            ],
-            "output_rules": ["输出纯文本。"],
-        },
-        request,
-    )
-
-    assert schema.retry_policy
-    assert "低分维度" in schema.retry_policy[0]
-
-
-def test_schema_from_data_uses_system_defaults_when_ai_omits_non_scoring_fields():
-    request = CompileRubricRequest(
-        rubric="任意格式评分标准，由 AI 自行理解。",
-        answer_minutes=3,
-        passing_score=95,
-    )
-
-    schema = _schema_from_data(
-        {
-            "dimensions": [
-                {
-                    "name": "审题准确度",
-                    "max_score": 15,
-                    "criteria": ["准确把握题目核心任务"],
-                    "pitfalls": ["偏离题意"],
-                }
-            ],
-        },
-        request,
-    )
-
-    assert schema.role_prompt
-    assert schema.answer_principles
-    assert schema.retry_policy
-    assert schema.output_rules
-    assert schema.dimensions[0].name == "审题准确度"
-
-
-@pytest.mark.asyncio
-async def test_compile_with_openai_repairs_invalid_ai_schema(monkeypatch):
-    request = CompileRubricRequest(
-        rubric="审题准确度15分，论证思维20分。",
-        answer_minutes=3,
-        passing_score=95,
-    )
-    prompts: list[str] = []
+def install_fake_completions(monkeypatch, responses: list[str]) -> list[dict]:
+    calls: list[dict] = []
 
     class FakeResponse:
         def __init__(self, content: str):
@@ -142,18 +36,298 @@ async def test_compile_with_openai_repairs_invalid_ai_schema(monkeypatch):
 
     class FakeAsyncClient:
         def __init__(self, *args, **kwargs):
+            self.responses = [FakeResponse(content) for content in responses]
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, headers, json):
+            calls.append(json)
+            return self.responses.pop(0)
+
+    monkeypatch.setattr(rubric_compiler.httpx, "AsyncClient", FakeAsyncClient)
+    return calls
+
+
+def audit_result(passed: bool = True) -> dict:
+    return {
+        "passed": passed,
+        "missing_requirement_ids": [] if passed else ["REQ-002"],
+        "unsupported_schema_paths": [],
+        "conflicts": [],
+        "score_issues": [],
+        "repair_instructions": [] if passed else ["补充 REQ-002 映射"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_compile_rubric_requires_ai_configuration(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
+        await compile_rubric(make_request())
+
+
+@pytest.mark.asyncio
+async def test_compile_pipeline_compiles_and_audits_without_repair(monkeypatch):
+    responses = [
+        json.dumps(valid_schema_data(), ensure_ascii=False),
+        json.dumps(audit_result(), ensure_ascii=False),
+    ]
+    calls = install_fake_completions(monkeypatch, responses)
+
+    result = await _compile_with_openai(make_request(), "test-key")
+
+    assert result.rubric_schema.version == "v2"
+    assert result.rubric_schema.compilation.coverage_passed is True
+    assert result.rubric_schema.compilation.auditor_model == "gpt-4o-mini"
+    assert len(calls) == 2
+    assert len(calls[0]["messages"]) == 2
+    assert len(calls[1]["messages"]) == 2
+    assert "评分标准编译器" in calls[0]["messages"][0]["content"]
+    assert "独立的评分标准覆盖审计员" in calls[1]["messages"][0]["content"]
+    assert "独立审计" in calls[1]["messages"][1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_compile_pipeline_repairs_once_after_failed_validation(monkeypatch):
+    invalid = valid_schema_data()
+    invalid["dimensions"][1]["max_score"] = 40
+    calls = install_fake_completions(
+        monkeypatch,
+        [
+            json.dumps(invalid, ensure_ascii=False),
+            json.dumps(valid_schema_data(), ensure_ascii=False),
+            json.dumps(audit_result(), ensure_ascii=False),
+        ],
+    )
+
+    result = await _compile_with_openai(make_request(), "test-key")
+
+    assert result.rubric_schema.compilation.coverage_passed is True
+    assert len(calls) == 3
+    assert "INVALID_SCORE_TOTAL" in calls[1]["messages"][1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_compile_pipeline_repairs_once_after_failed_audit(monkeypatch):
+    first = valid_schema_data()
+    first["source_requirements"].append(
+        {"id": "REQ-003", "text": "关注群众诉求", "kind": "criterion"}
+    )
+    first["dimensions"][1]["source_requirement_ids"].append("REQ-003")
+    repaired = valid_schema_data()
+    repaired["source_requirements"].append(
+        {"id": "REQ-003", "text": "关注群众诉求", "kind": "criterion"}
+    )
+    repaired["dimensions"][1]["criteria"].append(
+        {
+            "id": "CRI-003",
+            "text": "关注群众诉求",
+            "source_requirement_ids": ["REQ-003"],
+        }
+    )
+    repaired["dimensions"][1]["source_requirement_ids"].append("REQ-003")
+    failed_audit = audit_result(False)
+    failed_audit["missing_requirement_ids"] = ["REQ-003"]
+    failed_audit["repair_instructions"] = ["新增群众诉求 criterion 并映射 REQ-003"]
+    calls = install_fake_completions(
+        monkeypatch,
+        [
+            json.dumps(first, ensure_ascii=False),
+            json.dumps(failed_audit, ensure_ascii=False),
+            json.dumps(repaired, ensure_ascii=False),
+            json.dumps(audit_result(), ensure_ascii=False),
+        ],
+    )
+
+    result = await _compile_with_openai(make_request(), "test-key")
+
+    assert result.rubric_schema.compilation.coverage_passed is True
+    assert len(calls) == 4
+
+
+@pytest.mark.asyncio
+async def test_compile_pipeline_fails_after_single_repair(monkeypatch):
+    calls = install_fake_completions(
+        monkeypatch,
+        [
+            json.dumps(valid_schema_data(), ensure_ascii=False),
+            json.dumps(audit_result(False), ensure_ascii=False),
+            json.dumps(valid_schema_data(), ensure_ascii=False),
+            json.dumps(audit_result(False), ensure_ascii=False),
+        ],
+    )
+
+    with pytest.raises(RubricCompilationError) as error:
+        await _compile_with_openai(make_request(), "test-key")
+
+    assert error.value.stage == "auditing_repaired_schema"
+    assert error.value.code == "COVERAGE_AUDIT_FAILED"
+    assert len(calls) == 4
+
+
+@pytest.mark.asyncio
+async def test_compile_pipeline_does_not_repair_again_after_validation_repair(
+    monkeypatch,
+):
+    invalid = valid_schema_data()
+    invalid["dimensions"][1]["max_score"] = 40
+    calls = install_fake_completions(
+        monkeypatch,
+        [
+            json.dumps(invalid, ensure_ascii=False),
+            json.dumps(valid_schema_data(), ensure_ascii=False),
+            json.dumps(audit_result(False), ensure_ascii=False),
+        ],
+    )
+
+    with pytest.raises(RubricCompilationError) as error:
+        await _compile_with_openai(make_request(), "test-key")
+
+    assert error.value.stage == "auditing_repaired_schema"
+    assert error.value.code == "COVERAGE_AUDIT_FAILED"
+    assert len(calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_compile_pipeline_reports_invalid_compile_json(monkeypatch):
+    install_fake_completions(monkeypatch, ["not json"])
+
+    with pytest.raises(RubricCompilationError) as error:
+        await _compile_with_openai(make_request(), "test-key")
+
+    assert error.value.stage == "compiling_schema"
+    assert error.value.code == "INVALID_MODEL_RESPONSE"
+
+
+@pytest.mark.asyncio
+async def test_compile_pipeline_reports_invalid_audit_json(monkeypatch):
+    install_fake_completions(
+        monkeypatch,
+        [json.dumps(valid_schema_data(), ensure_ascii=False), "not json"],
+    )
+
+    with pytest.raises(RubricCompilationError) as error:
+        await _compile_with_openai(make_request(), "test-key")
+
+    assert error.value.stage == "auditing_coverage"
+    assert error.value.code == "INVALID_MODEL_RESPONSE"
+
+
+@pytest.mark.asyncio
+async def test_compile_pipeline_reports_invalid_repair_json(monkeypatch):
+    install_fake_completions(
+        monkeypatch,
+        [
+            json.dumps(valid_schema_data(), ensure_ascii=False),
+            json.dumps(audit_result(False), ensure_ascii=False),
+            "not json",
+        ],
+    )
+
+    with pytest.raises(RubricCompilationError) as error:
+        await _compile_with_openai(make_request(), "test-key")
+
+    assert error.value.stage == "repairing_schema"
+    assert error.value.code == "INVALID_MODEL_RESPONSE"
+
+
+@pytest.mark.asyncio
+async def test_compile_pipeline_rejects_contradictory_passed_audit(monkeypatch):
+    contradictory = audit_result()
+    contradictory["missing_requirement_ids"] = ["REQ-002"]
+    install_fake_completions(
+        monkeypatch,
+        [
+            json.dumps(valid_schema_data(), ensure_ascii=False),
+            json.dumps(contradictory, ensure_ascii=False),
+        ],
+    )
+
+    with pytest.raises(RubricCompilationError) as error:
+        await _compile_with_openai(make_request(), "test-key")
+
+    assert error.value.stage == "auditing_coverage"
+    assert error.value.code == "INVALID_MODEL_RESPONSE"
+
+
+@pytest.mark.asyncio
+async def test_compile_pipeline_rejects_failed_audit_without_issues(monkeypatch):
+    empty_failure = audit_result()
+    empty_failure["passed"] = False
+    install_fake_completions(
+        monkeypatch,
+        [
+            json.dumps(valid_schema_data(), ensure_ascii=False),
+            json.dumps(empty_failure, ensure_ascii=False),
+        ],
+    )
+
+    with pytest.raises(RubricCompilationError) as error:
+        await _compile_with_openai(make_request(), "test-key")
+
+    assert error.value.stage == "auditing_coverage"
+    assert error.value.code == "INVALID_MODEL_RESPONSE"
+
+
+@pytest.mark.parametrize(
+    ("raised", "code"),
+    [
+        (httpx.ReadTimeout("model request timed out"), "AI_SERVICE_TIMEOUT"),
+        (httpx.ConnectError("model unavailable"), "AI_SERVICE_ERROR"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_compile_pipeline_wraps_model_transport_errors(
+    monkeypatch, raised, code
+):
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, headers, json):
+            raise raised
+
+    monkeypatch.setattr(rubric_compiler.httpx, "AsyncClient", FakeAsyncClient)
+
+    with pytest.raises(RubricCompilationError) as error:
+        await _compile_with_openai(make_request(), "test-key")
+
+    assert error.value.stage == "compiling_schema"
+    assert error.value.code == code
+
+
+@pytest.mark.asyncio
+async def test_compile_with_openai_uses_configured_timeout(monkeypatch):
+    captured_timeout = None
+
+    class FakeResponse:
+        def __init__(self, content: str):
+            self.content = content
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": self.content}}]}
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            nonlocal captured_timeout
+            captured_timeout = kwargs.get("timeout")
             self.responses = [
-                FakeResponse(
-                    '{"role_prompt":"你是一名考生","answer_principles":["自然作答"],'
-                    '"dimensions":[{"name":"审题准确度","max_score":15,"pitfalls":["偏题"]}],'
-                    '"retry_policy":["修复低分项"],"output_rules":["纯文本"]}'
-                ),
-                FakeResponse(
-                    '{"role_prompt":"你是一名考生","answer_principles":["自然作答"],'
-                    '"dimensions":[{"name":"审题准确度","max_score":15,'
-                    '"criteria":["准确把握题目核心任务"],"pitfalls":["偏题"]}],'
-                    '"retry_policy":["修复低分项"],"output_rules":["纯文本"]}'
-                ),
+                FakeResponse(json.dumps(valid_schema_data(), ensure_ascii=False)),
+                FakeResponse(json.dumps(audit_result(), ensure_ascii=False)),
             ]
 
         async def __aenter__(self):
@@ -163,64 +337,11 @@ async def test_compile_with_openai_repairs_invalid_ai_schema(monkeypatch):
             return False
 
         async def post(self, url, headers, json):
-            prompts.append(json["messages"][1]["content"])
             return self.responses.pop(0)
-
-    monkeypatch.setattr(rubric_compiler.httpx, "AsyncClient", FakeAsyncClient)
-
-    result = await _compile_with_openai(request, "test-key")
-
-    assert result.rubric_schema.dimensions[0].criteria == ["准确把握题目核心任务"]
-    assert len(prompts) == 2
-    assert "修复" in prompts[1]
-
-
-@pytest.mark.asyncio
-async def test_compile_with_openai_uses_configured_timeout(monkeypatch):
-    request = CompileRubricRequest(
-        rubric="审题准确度15分，论证思维20分。",
-        answer_minutes=3,
-        passing_score=95,
-    )
-    captured_timeout = None
-
-    class FakeResponse:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {
-                "choices": [
-                    {
-                        "message": {
-                            "content": (
-                                '{"role_prompt":"你是一名考生","answer_principles":["自然作答"],'
-                                '"dimensions":[{"name":"审题准确度","max_score":15,'
-                                '"criteria":["准确把握题目核心任务"],"pitfalls":["偏题"]}],'
-                                '"retry_policy":["修复低分项"],"output_rules":["纯文本"]}'
-                            )
-                        }
-                    }
-                ]
-            }
-
-    class FakeAsyncClient:
-        def __init__(self, *args, **kwargs):
-            nonlocal captured_timeout
-            captured_timeout = kwargs.get("timeout")
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return False
-
-        async def post(self, url, headers, json):
-            return FakeResponse()
 
     monkeypatch.setenv("OPENAI_TIMEOUT_SECONDS", "180")
     monkeypatch.setattr(rubric_compiler.httpx, "AsyncClient", FakeAsyncClient)
 
-    await _compile_with_openai(request, "test-key")
+    await _compile_with_openai(make_request(), "test-key")
 
     assert captured_timeout == 180

@@ -80,22 +80,6 @@ class CoverageAuditResult(BaseModel):
     repair_instructions: List[str] = Field(default_factory=list)
 
 
-# Kept for compatibility until the v1 compiler is replaced by the audited pipeline.
-class RubricDimensionSchema(BaseModel):
-    name: str
-    max_score: int
-    criteria: List[str] = Field(default_factory=list)
-    pitfalls: List[str] = Field(default_factory=list)
-
-
-class RubricSchema(BaseModel):
-    role_prompt: str
-    answer_principles: List[str] = Field(default_factory=list)
-    dimensions: List[RubricDimensionSchema] = Field(default_factory=list)
-    retry_policy: List[str] = Field(default_factory=list)
-    output_rules: List[str] = Field(default_factory=list)
-
-
 class CompileRubricRequest(BaseModel):
     rubric: str
     answer_minutes: float = Field(gt=0)
@@ -103,9 +87,9 @@ class CompileRubricRequest(BaseModel):
 
 
 class CompileRubricResponse(BaseModel):
-    compiled_prompt: str
-    rubric_schema: RubricSchema
+    rubric_schema: RubricSchemaV2
     compiler_model: str
+    auditor_model: str
 
 
 class GenerateAnswerRequest(BaseModel):

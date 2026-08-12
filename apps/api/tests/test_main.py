@@ -2,6 +2,33 @@ from fastapi.testclient import TestClient
 import httpx
 
 import app.main as main
+from app.services.rubric_compiler import RubricCompilationError
+
+
+def test_compile_endpoint_returns_structured_failure(monkeypatch):
+    async def fail(_request):
+        raise RubricCompilationError(
+            stage="auditing_repaired_schema",
+            code="COVERAGE_AUDIT_FAILED",
+            message="评分标准覆盖审计失败",
+            details={"missing_requirement_ids": ["REQ-004"]},
+        )
+
+    monkeypatch.setattr(main, "compile_rubric", fail)
+    client = TestClient(main.app)
+
+    response = client.post(
+        "/ai/compile-rubric",
+        json={"rubric": "评分标准", "answer_minutes": 2, "passing_score": 95},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == {
+        "stage": "auditing_repaired_schema",
+        "code": "COVERAGE_AUDIT_FAILED",
+        "message": "评分标准覆盖审计失败",
+        "details": {"missing_requirement_ids": ["REQ-004"]},
+    }
 
 
 def test_compile_rubric_endpoint_returns_bad_gateway_for_invalid_ai_schema(monkeypatch):

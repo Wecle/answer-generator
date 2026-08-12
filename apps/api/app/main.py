@@ -18,7 +18,7 @@ from app.models import (
 from app.services.document_parser import parse_docx_questions, parse_docx_questions_with_ai
 from app.services.generator import generate_answer
 from app.services.orchestrator import run_item
-from app.services.rubric_compiler import compile_rubric
+from app.services.rubric_compiler import RubricCompilationError, compile_rubric
 from app.services.reviewer import review_answer
 
 load_project_env()
@@ -50,6 +50,8 @@ async def parse_docx(file: UploadFile = File(...), mode: str = Form("rules")) ->
 async def compile_rubric_endpoint(request: CompileRubricRequest) -> CompileRubricResponse:
     try:
         return await compile_rubric(request)
+    except RubricCompilationError as error:
+        raise HTTPException(status_code=422, detail=error.as_dict()) from error
     except RuntimeError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except httpx.TimeoutException as error:
