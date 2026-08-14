@@ -1,6 +1,6 @@
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ParsedQuestion(BaseModel):
@@ -92,21 +92,53 @@ class CompileRubricResponse(BaseModel):
     auditor_model: str
 
 
+class FailedCriterion(BaseModel):
+    criterion_id: str
+    reason: str
+    repair_instruction: str
+
+
+class RetryFeedback(BaseModel):
+    failed_criteria: List[FailedCriterion] = Field(default_factory=list)
+    preserved_criteria_ids: List[str] = Field(default_factory=list)
+    reasons: List[str] = Field(default_factory=list)
+
+
+class PromptMetadata(BaseModel):
+    pipeline_version: Literal["generation-pipe-v1"] = "generation-pipe-v1"
+    schema_version: Literal["rubric-schema-v2"] = "rubric-schema-v2"
+    base_prompt_version: Literal["base-v1"] = "base-v1"
+    rubric_prompt_version: Literal["rubric-v1"] = "rubric-v1"
+    retry_prompt_version: Literal["retry-v1"] = "retry-v1"
+    loaded_sections: List[str]
+
+
 class GenerateAnswerRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     material: Optional[str] = None
     question: str
-    rubric: str
-    compiled_prompt: Optional[str] = None
-    rubric_schema: Optional[RubricSchemaV2] = None
+    rubric_schema: RubricSchemaV2
     answer_minutes: float = Field(gt=0)
+    target_min_words: int = Field(gt=0)
     target_words: int = Field(gt=0)
-    previous_feedback: List[str] = Field(default_factory=list)
+    target_max_words: int = Field(gt=0)
+    previous_feedback: Optional[RetryFeedback] = None
+
+    @model_validator(mode="after")
+    def validate_verified_schema_and_word_bounds(self) -> "GenerateAnswerRequest":
+        if not self.rubric_schema.compilation.coverage_passed:
+            raise ValueError("rubric_schema must pass coverage audit")
+        if not self.target_min_words <= self.target_words <= self.target_max_words:
+            raise ValueError("word bounds must satisfy min <= target <= max")
+        return self
 
 
 class GenerateAnswerResponse(BaseModel):
     answer: str
     model: str
-    prompt_version: str = "v1"
+    prompt_version: str = "generation-pipe-v1+rubric-schema-v2"
+    prompt_metadata: PromptMetadata
 
 
 class ReviewAnswerRequest(BaseModel):
