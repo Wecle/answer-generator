@@ -1,6 +1,18 @@
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+def _require_non_blank(value: str) -> str:
+    if not value.strip():
+        raise ValueError("must not be blank")
+    return value
+
+
+def _require_non_blank_items(values: List[str]) -> List[str]:
+    if any(not value.strip() for value in values):
+        raise ValueError("items must not be blank")
+    return values
 
 
 class ParsedQuestion(BaseModel):
@@ -46,6 +58,16 @@ class RubricBonusRule(BaseModel):
     max_score: int = Field(gt=0)
     source_requirement_ids: List[str] = Field(min_length=1)
 
+    @field_validator("id", "text")
+    @classmethod
+    def validate_non_blank_fields(cls, value: str) -> str:
+        return _require_non_blank(value)
+
+    @field_validator("source_requirement_ids")
+    @classmethod
+    def validate_non_blank_sources(cls, values: List[str]) -> List[str]:
+        return _require_non_blank_items(values)
+
     @model_validator(mode="after")
     def validate_range(self) -> "RubricBonusRule":
         if self.min_score > self.max_score:
@@ -63,6 +85,16 @@ class RubricPenaltyRule(BaseModel):
     min_score: Optional[int] = Field(default=None, ge=0, le=100)
     max_score: Optional[int] = Field(default=None, ge=0, le=100)
     source_requirement_ids: List[str] = Field(min_length=1)
+
+    @field_validator("id", "text")
+    @classmethod
+    def validate_non_blank_fields(cls, value: str) -> str:
+        return _require_non_blank(value)
+
+    @field_validator("source_requirement_ids")
+    @classmethod
+    def validate_non_blank_sources(cls, values: List[str]) -> List[str]:
+        return _require_non_blank_items(values)
 
     @model_validator(mode="after")
     def validate_effect_fields(self) -> "RubricPenaltyRule":
@@ -89,6 +121,16 @@ class RubricScoreConflict(BaseModel):
 
     text: str
     source_requirement_ids: List[str] = Field(min_length=1)
+
+    @field_validator("text")
+    @classmethod
+    def validate_non_blank_text(cls, value: str) -> str:
+        return _require_non_blank(value)
+
+    @field_validator("source_requirement_ids")
+    @classmethod
+    def validate_non_blank_sources(cls, values: List[str]) -> List[str]:
+        return _require_non_blank_items(values)
 
     @model_validator(mode="after")
     def validate_distinct_sources(self) -> "RubricScoreConflict":

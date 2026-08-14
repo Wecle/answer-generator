@@ -74,6 +74,39 @@ def test_candidate_rejects_score_conflict_without_two_distinct_sources(
         RubricSchemaCandidate.model_validate(data)
 
 
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda data: data["scoring_policy"]["bonus_rules"][0].update({"id": " "}),
+        lambda data: data["scoring_policy"]["bonus_rules"][0].update({"text": "\t"}),
+        lambda data: data["scoring_policy"]["bonus_rules"][0].update(
+            {"source_requirement_ids": [" "]}
+        ),
+        lambda data: data["scoring_policy"]["penalty_rules"][0].update(
+            {"id": "\n"}
+        ),
+        lambda data: data["scoring_policy"]["penalty_rules"][0].update(
+            {"text": " "}
+        ),
+        lambda data: data["scoring_policy"]["penalty_rules"][0].update(
+            {"source_requirement_ids": ["\t"]}
+        ),
+        lambda data: data["scoring_policy"]["score_conflicts"][0].update(
+            {"text": " "}
+        ),
+        lambda data: data["scoring_policy"]["score_conflicts"][0].update(
+            {"source_requirement_ids": ["REQ-003", " "]}
+        ),
+    ],
+)
+def test_candidate_rejects_blank_scoring_policy_fields(mutate):
+    data = normalized_candidate_data()
+    mutate(data)
+
+    with pytest.raises(ValueError, match="must not be blank"):
+        RubricSchemaCandidate.model_validate(data)
+
+
 def test_validator_accepts_complete_100_point_schema():
     validate_rubric_schema(RubricSchemaV2.model_validate(valid_schema_data()))
 
