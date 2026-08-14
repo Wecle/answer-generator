@@ -5,11 +5,14 @@ import re
 import httpx
 
 from app.models import (
+    AwardedBonus,
     FailedCriterion,
     ReviewAnswerRequest,
     ReviewAnswerResponse,
     ReviewDimension,
+    TriggeredPenalty,
 )
+from app.services.scoring import compute_scoring_details
 
 
 async def review_answer(request: ReviewAnswerRequest) -> ReviewAnswerResponse:
@@ -41,6 +44,13 @@ async def _review_with_openai(
         }
         for dimension in request.rubric_schema.dimensions
     ]
+    scoring_policy_payload = {
+        "scoring_policy": (
+            request.rubric_schema.scoring_policy.model_dump(mode="json")
+            if request.rubric_schema.scoring_policy is not None
+            else None
+        )
+    }
     prompt = (
         "你是公务员结构化面试答案评分员。只依据给定的 Rubric Schema 评分，只输出 JSON。\n"
         "评分原则：\n"
@@ -56,13 +66,19 @@ async def _review_with_openai(
         f"题目：\n{request.question}\n\n"
         "Rubric Schema 评分维度 JSON：\n"
         f"{json.dumps(dimensions_payload, ensure_ascii=False)}\n\n"
+        "Rubric Schema scoring_policy JSON：\n"
+        f"{json.dumps(scoring_policy_payload, ensure_ascii=False)}\n\n"
         f"答案：\n{request.answer}\n\n"
         "返回 JSON 格式："
         '{"dimensions":[{"dimension_id":"DIM-001","score":0}],'
+        '"bonuses":[{"bonus_rule_id":"BONUS-001","score":0,'
+        '"reason":"加分事实与依据"}],'
+        '"triggered_penalties":[{"penalty_rule_id":"PEN-001",'
+        '"reason":"触发事实与依据"}],'
         '"failed_criteria":[{"criterion_id":"CRI-001","reason":"具体缺失",'
         '"repair_instruction":"具体修复动作"}],'
         '"preserved_criteria_ids":["CRI-002"],'
-        '"total_score":0,"passed":false,"reasons":["审核摘要"]}'
+        '"reasons":["审核摘要"]}'
     )
 
     async with httpx.AsyncClient(timeout=90) as client:
@@ -87,7 +103,17 @@ async def _review_with_openai(
 
     data = json.loads(payload["choices"][0]["message"]["content"])
     dimensions = _normalize_ai_dimensions(data.get("dimensions"), request)
-    total_score = min(100, sum(item.score for item in dimensions))
+    bonuses = _normalize_ai_bonuses(data.get("bonuses"), request)
+    triggered_penalties = _normalize_triggered_penalties(
+        data.get("triggered_penalties"), request
+    )
+    scoring_details = compute_scoring_details(
+        request.rubric_schema,
+        dimensions,
+        bonuses,
+        triggered_penalties,
+    )
+    total_score = scoring_details.final_score
     failed_criteria = _normalize_failed_criteria(
         data.get("failed_criteria"), request
     )
@@ -104,14 +130,18 @@ async def _review_with_openai(
         raise ValueError("AI review must classify every known criterion exactly once")
     reasons = _normalize_reasons(data.get("reasons"))
     if not reasons:
-        reasons = _summary_reasons(
-            total_score, request.passing_score, failed_criteria
-        )
+        reasons = _summary_reasons(total_score, request.passing_score, failed_criteria)
+        if scoring_details.vetoed:
+            reasons.insert(0, "答案触发一票否决规则，未通过审核。")
 
     return ReviewAnswerResponse(
         total_score=total_score,
-        passed=total_score >= request.passing_score,
+        passed=(
+            not scoring_details.vetoed
+            and total_score >= request.passing_score
+        ),
         dimensions=dimensions,
+        scoring_details=scoring_details,
         failed_criteria=failed_criteria,
         preserved_criteria_ids=preserved,
         reasons=reasons,
@@ -148,16 +178,30 @@ def _review_locally(request: ReviewAnswerRequest) -> ReviewAnswerResponse:
             )
         )
 
-    total_score = min(100, sum(item.score for item in dimensions))
+    scoring_details = compute_scoring_details(
+        request.rubric_schema,
+        dimensions,
+        [],
+        [],
+    )
+    total_score = scoring_details.final_score
+    reasons = _summary_reasons(total_score, request.passing_score, failed_criteria)
+    if request.rubric_schema.scoring_policy is not None:
+        reasons.append(
+            "本地审核不推断主观加分或无法可靠判断的扣分、定性规则，"
+            "因此 bonus 和 triggered penalty 均按空结果处理。"
+        )
     return ReviewAnswerResponse(
         total_score=total_score,
-        passed=total_score >= request.passing_score,
+        passed=(
+            not scoring_details.vetoed
+            and total_score >= request.passing_score
+        ),
         dimensions=dimensions,
+        scoring_details=scoring_details,
         failed_criteria=failed_criteria,
         preserved_criteria_ids=preserved,
-        reasons=_summary_reasons(
-            total_score, request.passing_score, failed_criteria
-        ),
+        reasons=reasons,
         reviewer_model="schema-criterion-reviewer-v1",
     )
 
@@ -224,6 +268,83 @@ def _normalize_failed_criteria(
             )
         )
         seen.add(criterion_id)
+    return normalized
+
+
+def _normalize_ai_bonuses(
+    value: object, request: ReviewAnswerRequest
+) -> list[AwardedBonus]:
+    policy = request.rubric_schema.scoring_policy
+    if policy is None:
+        return []
+    known_rules = {rule.id: rule for rule in policy.bonus_rules}
+    raw_items = value if isinstance(value, list) else []
+    normalized: list[AwardedBonus] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        bonus_rule_id_value = item.get("bonus_rule_id")
+        if not isinstance(bonus_rule_id_value, str):
+            continue
+        bonus_rule_id = bonus_rule_id_value.strip()
+        rule = known_rules.get(bonus_rule_id)
+        if rule is None or bonus_rule_id in seen:
+            continue
+        try:
+            score = max(0, int(round(float(item.get("score", 0)))))
+        except (TypeError, ValueError, OverflowError):
+            score = 0
+        reason_value = item.get("reason")
+        reason = (
+            reason_value.strip()
+            if isinstance(reason_value, str) and reason_value.strip()
+            else rule.text
+        )
+        normalized.append(
+            AwardedBonus(
+                bonus_rule_id=bonus_rule_id,
+                score=score,
+                reason=reason,
+            )
+        )
+        seen.add(bonus_rule_id)
+    return normalized
+
+
+def _normalize_triggered_penalties(
+    value: object, request: ReviewAnswerRequest
+) -> list[TriggeredPenalty]:
+    policy = request.rubric_schema.scoring_policy
+    if policy is None:
+        return []
+    known_rules = {rule.id: rule for rule in policy.penalty_rules}
+    raw_items = value if isinstance(value, list) else []
+    normalized: list[TriggeredPenalty] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        penalty_rule_id_value = item.get("penalty_rule_id")
+        if not isinstance(penalty_rule_id_value, str):
+            continue
+        penalty_rule_id = penalty_rule_id_value.strip()
+        rule = known_rules.get(penalty_rule_id)
+        if rule is None or penalty_rule_id in seen:
+            continue
+        reason_value = item.get("reason")
+        reason = (
+            reason_value.strip()
+            if isinstance(reason_value, str) and reason_value.strip()
+            else rule.text
+        )
+        normalized.append(
+            TriggeredPenalty(
+                penalty_rule_id=penalty_rule_id,
+                reason=reason,
+            )
+        )
+        seen.add(penalty_rule_id)
     return normalized
 
 

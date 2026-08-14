@@ -1,4 +1,5 @@
 import json
+from typing import Optional
 
 import pytest
 from pydantic import ValidationError
@@ -6,7 +7,7 @@ from pydantic import ValidationError
 from app.models import ReviewAnswerRequest
 from app.services.reviewer import review_answer
 import app.services.reviewer as reviewer
-from tests.rubric_fixtures import valid_schema_data
+from tests.rubric_fixtures import normalized_schema_data, valid_schema_data
 
 
 def verified_schema_data() -> dict:
@@ -25,7 +26,23 @@ def make_review_request() -> ReviewAnswerRequest:
     )
 
 
-def install_review_completion(monkeypatch, payload: dict) -> None:
+def make_normalized_review_request(**overrides) -> ReviewAnswerRequest:
+    schema = normalized_schema_data()
+    schema["compilation"]["auditor_model"] = "test-auditor"
+    schema["compilation"]["coverage_passed"] = True
+    values = {
+        "question": "如何形成工作闭环？",
+        "rubric_schema": schema,
+        "answer": "要准确分析问题并提出措施。",
+        "passing_score": 95,
+    }
+    values.update(overrides)
+    return ReviewAnswerRequest(**values)
+
+
+def install_review_completion(
+    monkeypatch, payload: dict, captured_request: Optional[dict] = None
+) -> None:
     class FakeResponse:
         def raise_for_status(self):
             return None
@@ -52,6 +69,8 @@ def install_review_completion(monkeypatch, payload: dict) -> None:
             return False
 
         async def post(self, url, headers, json):
+            if captured_request is not None:
+                captured_request.update(json)
             return FakeResponse()
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
@@ -71,6 +90,9 @@ async def test_local_reviewer_returns_criterion_feedback(monkeypatch):
     )
 
     assert result.total_score == sum(item.score for item in result.dimensions)
+    assert result.scoring_details.final_score == result.total_score
+    assert result.scoring_details.awarded_bonuses == []
+    assert result.scoring_details.triggered_penalties == []
     assert any(item.criterion_id == "CRI-002" for item in result.failed_criteria)
     assert "CRI-001" in result.preserved_criteria_ids
 
@@ -107,6 +129,7 @@ async def test_reviewer_rejects_model_total_and_unknown_criteria(monkeypatch):
 
     assert result.total_score == 80
     assert result.passed is False
+    assert result.scoring_details.final_score == 80
     assert [item.criterion_id for item in result.failed_criteria] == ["CRI-002"]
     assert result.preserved_criteria_ids == ["CRI-001"]
 
@@ -162,6 +185,114 @@ async def test_reviewer_clamps_ai_dimension_scores(monkeypatch):
     assert [item.score for item in result.dimensions] == [50, 0]
     assert result.total_score == 50
     assert result.passed is False
+
+
+@pytest.mark.asyncio
+async def test_reviewer_normalizes_known_bonus_and_penalty_ids(monkeypatch):
+    captured_request: dict = {}
+    install_review_completion(
+        monkeypatch,
+        {
+            "dimensions": [
+                {"dimension_id": "DIM-001", "score": 40},
+                {"dimension_id": "DIM-002", "score": 30},
+            ],
+            "bonuses": [
+                {
+                    "bonus_rule_id": "BONUS-001",
+                    "score": 4,
+                    "reason": "表达有具体场景",
+                },
+                {
+                    "bonus_rule_id": "BONUS-002",
+                    "score": 3,
+                    "reason": "表达自然",
+                },
+                {
+                    "bonus_rule_id": "BONUS-999",
+                    "score": 99,
+                    "reason": "未知规则",
+                },
+            ],
+            "triggered_penalties": [
+                {"penalty_rule_id": "PEN-999", "reason": "未知规则"}
+            ],
+            "failed_criteria": [],
+            "preserved_criteria_ids": ["CRI-001", "CRI-002"],
+            "total_score": 1,
+            "passed": True,
+            "reasons": ["模型声明的总分不能被信任"],
+        },
+        captured_request,
+    )
+
+    result = await review_answer(make_normalized_review_request())
+
+    assert result.total_score == 94
+    assert result.passed is False
+    assert result.scoring_details.raw_score == 77
+    assert result.scoring_details.normalized_score == 94
+    assert [item.model_dump() for item in result.scoring_details.awarded_bonuses] == [
+        {
+            "bonus_rule_id": "BONUS-001",
+            "score": 4,
+            "reason": "表达有具体场景",
+        },
+        {"bonus_rule_id": "BONUS-002", "score": 3, "reason": "表达自然"},
+    ]
+    assert result.scoring_details.triggered_penalties == []
+    prompt = captured_request["messages"][1]["content"]
+    assert '"scoring_policy"' in prompt
+    assert '"bonuses"' in prompt
+    assert '"triggered_penalties"' in prompt
+
+
+@pytest.mark.asyncio
+async def test_triggered_veto_fails_regardless_of_final_score(monkeypatch):
+    request = make_normalized_review_request(passing_score=1)
+    request.rubric_schema.scoring_policy.penalty_rules[1].effect = "veto"
+    install_review_completion(
+        monkeypatch,
+        {
+            "dimensions": [
+                {"dimension_id": "DIM-001", "score": 40},
+                {"dimension_id": "DIM-002", "score": 35},
+            ],
+            "bonuses": [
+                {"bonus_rule_id": "BONUS-001", "score": 4, "reason": "有画面"},
+                {"bonus_rule_id": "BONUS-002", "score": 3, "reason": "有人味"},
+            ],
+            "triggered_penalties": [
+                {"penalty_rule_id": "PEN-002", "reason": "触发否决"}
+            ],
+            "failed_criteria": [],
+            "preserved_criteria_ids": ["CRI-001", "CRI-002"],
+            "total_score": 100,
+            "passed": True,
+            "reasons": [],
+        },
+    )
+
+    result = await review_answer(request)
+
+    assert result.total_score == 100
+    assert result.scoring_details.vetoed is True
+    assert result.passed is False
+
+
+@pytest.mark.asyncio
+async def test_local_reviewer_does_not_infer_subjective_rules(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    result = await review_answer(make_normalized_review_request())
+
+    assert [
+        (item.bonus_rule_id, item.score)
+        for item in result.scoring_details.awarded_bonuses
+    ] == [("BONUS-001", 0), ("BONUS-002", 0)]
+    assert all(item.score == 0 for item in result.scoring_details.awarded_bonuses)
+    assert result.scoring_details.triggered_penalties == []
+    assert any("本地审核" in reason and "不推断" in reason for reason in result.reasons)
 
 
 def test_review_request_rejects_unverified_schema_and_legacy_rubric():

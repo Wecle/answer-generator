@@ -51,6 +51,20 @@ def build_generation_prompt(request: GenerateAnswerRequest) -> PromptBuildResult
         )
     )
 
+    scoring_policy = request.rubric_schema.scoring_policy
+    if scoring_policy is not None:
+        scoring_lines = ["可争取的加分项："]
+        scoring_lines.extend(
+            f"- [{rule.id}] {rule.text}（达到条件后加{rule.min_score}-{rule.max_score}分）"
+            for rule in scoring_policy.bonus_rules
+        )
+        scoring_lines.append("必须避免的扣分或否决规则：")
+        scoring_lines.extend(
+            f"- [{rule.id}] {rule.text}（{rule.effect}）"
+            for rule in scoring_policy.penalty_rules
+        )
+        sections.append(("scoring_rules", "\n".join(scoring_lines)))
+
     if request.material and request.material.strip():
         sections.append(("material", "材料：\n" + request.material.strip()))
     sections.append(("question", "题目：\n" + request.question.strip()))

@@ -336,6 +336,7 @@ class ReviewAnswerResponse(BaseModel):
     total_score: int
     passed: bool
     dimensions: List[ReviewDimension]
+    scoring_details: ReviewScoringDetails
     failed_criteria: List[FailedCriterion] = Field(default_factory=list)
     preserved_criteria_ids: List[str] = Field(default_factory=list)
     reasons: List[str]

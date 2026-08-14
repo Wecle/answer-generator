@@ -3,7 +3,7 @@ from pydantic import ValidationError
 
 from app.models import GenerateAnswerRequest, RetryFeedback
 from app.services.prompt_pipe import build_generation_prompt
-from tests.rubric_fixtures import valid_schema_data
+from tests.rubric_fixtures import normalized_schema_data, valid_schema_data
 
 
 def make_request(**overrides):
@@ -73,6 +73,23 @@ def test_prompt_omits_empty_optional_sections():
     assert "material" not in result.metadata.loaded_sections
     assert "multi_question" not in result.metadata.loaded_sections
     assert "retry_feedback" not in result.metadata.loaded_sections
+
+
+def test_prompt_includes_bonus_ranges_and_penalty_effects_only():
+    schema = normalized_schema_data()
+    schema["compilation"]["auditor_model"] = "test-model"
+    schema["compilation"]["coverage_passed"] = True
+
+    result = build_generation_prompt(make_request(rubric_schema=schema))
+
+    assert "可争取的加分项" in result.prompt
+    assert "[BONUS-001] 有画面可加2-4分（达到条件后加2-4分）" in result.prompt
+    assert "必须避免的扣分或否决规则" in result.prompt
+    assert "[PEN-001] 答非所问掉到60-70分（set_range）" in result.prompt
+    assert "档位标题与逐项上限不一致" not in result.prompt
+    assert "raw_max_score" not in result.prompt
+    assert "linear" not in result.prompt
+    assert "scoring_rules" in result.metadata.loaded_sections
 
 
 def test_prompt_loads_reasons_only_feedback_and_numbered_questions():

@@ -6,6 +6,7 @@ from app.models import (
     PromptMetadata,
     ReviewAnswerResponse,
     ReviewDimension,
+    ReviewScoringDetails,
     RubricSchemaV2,
     RunItemRequest,
 )
@@ -48,6 +49,12 @@ def review_response(*, score: int, passed: bool) -> ReviewAnswerResponse:
                 max_score=50,
             ),
         ],
+        scoring_details=ReviewScoringDetails(
+            base_score=score,
+            raw_score=score,
+            normalized_score=score,
+            final_score=score,
+        ),
         failed_criteria=[] if passed else [
             FailedCriterion(
                 criterion_id="CRI-002",
