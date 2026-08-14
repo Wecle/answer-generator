@@ -291,10 +291,12 @@ def _normalize_ai_bonuses(
         rule = known_rules.get(bonus_rule_id)
         if rule is None or bonus_rule_id in seen:
             continue
-        try:
-            score = max(0, int(round(float(item.get("score", 0)))))
-        except (TypeError, ValueError, OverflowError):
-            score = 0
+        score_value = item.get("score", 0)
+        score = (
+            max(0, score_value)
+            if isinstance(score_value, int) and not isinstance(score_value, bool)
+            else 0
+        )
         reason_value = item.get("reason")
         reason = (
             reason_value.strip()
@@ -333,11 +335,9 @@ def _normalize_triggered_penalties(
         if rule is None or penalty_rule_id in seen:
             continue
         reason_value = item.get("reason")
-        reason = (
-            reason_value.strip()
-            if isinstance(reason_value, str) and reason_value.strip()
-            else rule.text
-        )
+        if not isinstance(reason_value, str) or not reason_value.strip():
+            continue
+        reason = reason_value.strip()
         normalized.append(
             TriggeredPenalty(
                 penalty_rule_id=penalty_rule_id,

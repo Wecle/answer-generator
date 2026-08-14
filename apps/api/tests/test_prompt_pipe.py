@@ -79,13 +79,44 @@ def test_prompt_includes_bonus_ranges_and_penalty_effects_only():
     schema = normalized_schema_data()
     schema["compilation"]["auditor_model"] = "test-model"
     schema["compilation"]["coverage_passed"] = True
+    schema["scoring_policy"]["penalty_rules"].extend(
+        [
+            {
+                "id": "PEN-DEDUCT",
+                "text": "遗漏关键对象",
+                "effect": "deduct",
+                "score": 10,
+                "source_requirement_ids": ["REQ-006"],
+            },
+            {
+                "id": "PEN-CAP",
+                "text": "偏离主题",
+                "effect": "cap",
+                "max_score": 65,
+                "source_requirement_ids": ["REQ-006"],
+            },
+            {
+                "id": "PEN-VETO",
+                "text": "违反硬性要求",
+                "effect": "veto",
+                "source_requirement_ids": ["REQ-006"],
+            },
+        ]
+    )
 
     result = build_generation_prompt(make_request(rubric_schema=schema))
 
     assert "可争取的加分项" in result.prompt
     assert "[BONUS-001] 有画面可加2-4分（达到条件后加2-4分）" in result.prompt
     assert "必须避免的扣分或否决规则" in result.prompt
-    assert "[PEN-001] 答非所问掉到60-70分（set_range）" in result.prompt
+    assert (
+        "[PEN-001] 答非所问掉到60-70分（set_range，限制到60-70分）"
+        in result.prompt
+    )
+    assert "[PEN-002] 超时印象分大扣（qualitative，仅作定性提醒）" in result.prompt
+    assert "[PEN-DEDUCT] 遗漏关键对象（deduct，扣10分）" in result.prompt
+    assert "[PEN-CAP] 偏离主题（cap，最高65分）" in result.prompt
+    assert "[PEN-VETO] 违反硬性要求（veto，一票否决）" in result.prompt
     assert "档位标题与逐项上限不一致" not in result.prompt
     assert "raw_max_score" not in result.prompt
     assert "linear" not in result.prompt

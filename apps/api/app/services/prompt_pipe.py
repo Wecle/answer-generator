@@ -2,7 +2,7 @@ import re
 
 from pydantic import BaseModel
 
-from app.models import GenerateAnswerRequest, PromptMetadata
+from app.models import GenerateAnswerRequest, PromptMetadata, RubricPenaltyRule
 
 
 class PromptBuildResult(BaseModel):
@@ -14,6 +14,18 @@ def _is_multi_question(question: str) -> bool:
     named_blocks = re.findall(r"(?:^|\n)\s*(?:问题|第)\s*\d+", question)
     numbered_blocks = re.findall(r"(?:^|\n)\s*\d+\s*[.、．)]", question)
     return len(named_blocks) >= 2 or len(numbered_blocks) >= 2
+
+
+def _format_penalty_effect(rule: RubricPenaltyRule) -> str:
+    if rule.effect == "deduct":
+        return f"deduct，扣{rule.score}分"
+    if rule.effect == "cap":
+        return f"cap，最高{rule.max_score}分"
+    if rule.effect == "set_range":
+        return f"set_range，限制到{rule.min_score}-{rule.max_score}分"
+    if rule.effect == "veto":
+        return "veto，一票否决"
+    return "qualitative，仅作定性提醒"
 
 
 def build_generation_prompt(request: GenerateAnswerRequest) -> PromptBuildResult:
@@ -60,7 +72,7 @@ def build_generation_prompt(request: GenerateAnswerRequest) -> PromptBuildResult
         )
         scoring_lines.append("必须避免的扣分或否决规则：")
         scoring_lines.extend(
-            f"- [{rule.id}] {rule.text}（{rule.effect}）"
+            f"- [{rule.id}] {rule.text}（{_format_penalty_effect(rule)}）"
             for rule in scoring_policy.penalty_rules
         )
         sections.append(("scoring_rules", "\n".join(scoring_lines)))

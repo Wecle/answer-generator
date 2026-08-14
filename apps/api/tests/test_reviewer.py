@@ -281,6 +281,72 @@ async def test_triggered_veto_fails_regardless_of_final_score(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_score", [4.49, True, "4"])
+async def test_reviewer_rejects_non_integer_bonus_scores(
+    monkeypatch, invalid_score
+):
+    request = make_normalized_review_request()
+    request.rubric_schema.scoring_policy.bonus_rules[0].min_score = 1
+    install_review_completion(
+        monkeypatch,
+        {
+            "dimensions": [
+                {"dimension_id": "DIM-001", "score": 40},
+                {"dimension_id": "DIM-002", "score": 30},
+            ],
+            "bonuses": [
+                {
+                    "bonus_rule_id": "BONUS-001",
+                    "score": invalid_score,
+                    "reason": "模型返回了非法分数类型",
+                }
+            ],
+            "triggered_penalties": [],
+            "failed_criteria": [],
+            "preserved_criteria_ids": ["CRI-001", "CRI-002"],
+            "reasons": [],
+        },
+    )
+
+    result = await review_answer(request)
+
+    assert result.scoring_details.awarded_bonuses[0].score == 0
+    assert result.scoring_details.raw_score == 70
+    assert result.total_score == 85
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_reason", [None, "", "   ", {"text": "伪依据"}])
+async def test_reviewer_requires_reason_to_trigger_penalty(
+    monkeypatch, invalid_reason
+):
+    request = make_normalized_review_request(passing_score=1)
+    request.rubric_schema.scoring_policy.penalty_rules[1].effect = "veto"
+    install_review_completion(
+        monkeypatch,
+        {
+            "dimensions": [
+                {"dimension_id": "DIM-001", "score": 40},
+                {"dimension_id": "DIM-002", "score": 35},
+            ],
+            "bonuses": [],
+            "triggered_penalties": [
+                {"penalty_rule_id": "PEN-002", "reason": invalid_reason}
+            ],
+            "failed_criteria": [],
+            "preserved_criteria_ids": ["CRI-001", "CRI-002"],
+            "reasons": [],
+        },
+    )
+
+    result = await review_answer(request)
+
+    assert result.scoring_details.triggered_penalties == []
+    assert result.scoring_details.vetoed is False
+    assert result.passed is True
+
+
+@pytest.mark.asyncio
 async def test_local_reviewer_does_not_infer_subjective_rules(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
