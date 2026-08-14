@@ -142,15 +142,23 @@ class GenerateAnswerResponse(BaseModel):
 
 
 class ReviewAnswerRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     material: Optional[str] = None
     question: str
-    rubric: str
-    rubric_schema: Optional[RubricSchemaV2] = None
+    rubric_schema: RubricSchemaV2
     answer: str
     passing_score: int = Field(default=95, ge=0, le=100)
 
+    @model_validator(mode="after")
+    def validate_verified_schema(self) -> "ReviewAnswerRequest":
+        if not self.rubric_schema.compilation.coverage_passed:
+            raise ValueError("rubric_schema must pass coverage audit")
+        return self
+
 
 class ReviewDimension(BaseModel):
+    dimension_id: str
     name: str
     score: int
     max_score: int
@@ -160,6 +168,8 @@ class ReviewAnswerResponse(BaseModel):
     total_score: int
     passed: bool
     dimensions: List[ReviewDimension]
+    failed_criteria: List[FailedCriterion] = Field(default_factory=list)
+    preserved_criteria_ids: List[str] = Field(default_factory=list)
     reasons: List[str]
     reviewer_model: str
 
