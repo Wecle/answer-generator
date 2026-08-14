@@ -13,6 +13,7 @@ import app.services.rubric_compiler as rubric_compiler
 from tests.rubric_fixtures import (
     normalized_candidate_data,
     normalized_schema_data,
+    reported_normalized_candidate_data,
     valid_candidate_data,
     valid_schema_data,
 )
@@ -210,6 +211,38 @@ async def test_compile_pipeline_accepts_normalized_policy_without_repair(
     assert sum(item.max_score for item in result.rubric_schema.dimensions) == 75
     assert policy.base_max_score == 75
     assert policy.normalization.raw_max_score == 82
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_reported_complex_rubric_compiles_and_audits_without_repair(
+    monkeypatch,
+):
+    candidate = reported_normalized_candidate_data()
+    calls = install_fake_completions(
+        monkeypatch,
+        [
+            json.dumps(candidate, ensure_ascii=False),
+            json.dumps(audit_result(), ensure_ascii=False),
+        ],
+    )
+
+    result = await _compile_with_openai(make_request(), "test-key")
+
+    policy = result.rubric_schema.scoring_policy
+    assert policy is not None
+    assert sum(item.max_score for item in result.rubric_schema.dimensions) == 75
+    assert len(policy.bonus_rules) == 7
+    assert sum(rule.max_score for rule in policy.bonus_rules) == 22
+    assert policy.normalization.raw_max_score == 97
+    assert [rule.effect for rule in policy.penalty_rules] == [
+        "set_range",
+        "qualitative",
+    ]
+    assert len(policy.score_conflicts) == 1
+    assert "90" in policy.score_conflicts[0].text
+    assert "97" in policy.score_conflicts[0].text
+    assert result.rubric_schema.compilation.coverage_passed is True
     assert len(calls) == 2
 
 

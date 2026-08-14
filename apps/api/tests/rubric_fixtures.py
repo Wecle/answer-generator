@@ -144,3 +144,78 @@ def normalized_schema_data() -> dict:
             "inferred_scores": inferred_scores,
         },
     }
+
+
+def reported_normalized_candidate_data() -> dict:
+    """Represent the reported 75-base, 22-bonus scoring source exactly."""
+    candidate = valid_candidate_data()
+    candidate["source_requirements"].extend(
+        [
+            {
+                "id": f"REQ-{index:03d}",
+                "text": text,
+                "kind": "score",
+            }
+            for index, text in enumerate(
+                [
+                    "有画面可加2-4分",
+                    "有细节可加2-3分",
+                    "有人味儿可加1-3分",
+                    "有金句可加1-3分",
+                    "有结构可加1-3分",
+                    "有深度可加1-3分",
+                    "有共情可加1-3分",
+                    "答非所问直接掉到60-70分",
+                    "超时印象分大扣",
+                    "档位标题最高分为90分",
+                    "基础分与逐项加分上限合计为97分",
+                ],
+                start=3,
+            )
+        ]
+    )
+    candidate["dimensions"][0]["max_score"] = 40
+    candidate["dimensions"][1]["max_score"] = 35
+    bonus_ranges = [(2, 4), (2, 3), (1, 3), (1, 3), (1, 3), (1, 3), (1, 3)]
+    candidate["scoring_policy"] = {
+        "mode": "normalized_rules",
+        "base_max_score": 75,
+        "bonus_rules": [
+            {
+                "id": f"BONUS-{index:03d}",
+                "text": candidate["source_requirements"][index + 1]["text"],
+                "min_score": score_range[0],
+                "max_score": score_range[1],
+                "source_requirement_ids": [f"REQ-{index + 2:03d}"],
+            }
+            for index, score_range in enumerate(bonus_ranges, start=1)
+        ],
+        "penalty_rules": [
+            {
+                "id": "PEN-001",
+                "text": "答非所问直接掉到60-70分",
+                "effect": "set_range",
+                "min_score": 60,
+                "max_score": 70,
+                "source_requirement_ids": ["REQ-010"],
+            },
+            {
+                "id": "PEN-002",
+                "text": "超时印象分大扣",
+                "effect": "qualitative",
+                "source_requirement_ids": ["REQ-011"],
+            },
+        ],
+        "score_conflicts": [
+            {
+                "text": "档位标题最高90分，但基础分与逐项加分上限合计为97分",
+                "source_requirement_ids": ["REQ-012", "REQ-013"],
+            }
+        ],
+        "normalization": {
+            "raw_max_score": 97,
+            "target_max_score": 100,
+            "method": "linear",
+        },
+    }
+    return candidate
