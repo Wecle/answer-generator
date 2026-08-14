@@ -1,8 +1,27 @@
 import pytest
 
-from app.models import RubricSchemaV2
+from app.models import RubricSchemaCandidate, RubricSchemaV2, build_rubric_schema
 from app.services.rubric_schema import RubricSchemaValidationError, validate_rubric_schema
-from tests.rubric_fixtures import valid_schema_data
+from tests.rubric_fixtures import valid_candidate_data, valid_schema_data
+
+
+def test_candidate_does_not_require_model_generated_compilation_metadata():
+    candidate = RubricSchemaCandidate.model_validate(valid_candidate_data())
+
+    assert candidate.inferred_scores is False
+    assert "compilation" not in candidate.model_dump()
+
+
+def test_server_builds_compilation_metadata_from_candidate():
+    candidate = RubricSchemaCandidate.model_validate(valid_candidate_data())
+
+    schema = build_rubric_schema(candidate, "deepseek-v4-pro")
+
+    assert isinstance(schema, RubricSchemaV2)
+    assert schema.compilation.compiler_model == "deepseek-v4-pro"
+    assert schema.compilation.auditor_model is None
+    assert schema.compilation.coverage_passed is False
+    assert schema.compilation.inferred_scores is False
 
 
 def test_validator_accepts_complete_100_point_schema():

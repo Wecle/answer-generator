@@ -1,4 +1,4 @@
-def valid_schema_data() -> dict:
+def valid_candidate_data() -> dict:
     return {
         "version": "v2",
         "role_prompt": "你是一名结构化面试考生。",
@@ -6,6 +6,7 @@ def valid_schema_data() -> dict:
             {"id": "REQ-001", "text": "准确分析问题", "kind": "criterion"},
             {"id": "REQ-002", "text": "措施形成闭环", "kind": "criterion"},
         ],
+        "global_constraints": [],
         "dimensions": [
             {
                 "id": "DIM-001",
@@ -51,10 +52,19 @@ def valid_schema_data() -> dict:
         "answer_principles": ["围绕题目作答"],
         "retry_policy": ["定向修复低分项"],
         "output_rules": ["输出纯文本"],
+        "inferred_scores": False,
+    }
+
+
+def valid_schema_data() -> dict:
+    candidate = valid_candidate_data()
+    inferred_scores = candidate.pop("inferred_scores")
+    return {
+        **candidate,
         "compilation": {
             "compiler_model": "test-model",
             "auditor_model": None,
             "coverage_passed": False,
-            "inferred_scores": False,
+            "inferred_scores": inferred_scores,
         },
     }

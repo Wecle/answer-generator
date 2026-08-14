@@ -53,7 +53,7 @@ class RubricCompilationMetadata(BaseModel):
     inferred_scores: bool = False
 
 
-class RubricSchemaV2(BaseModel):
+class RubricSchemaContent(BaseModel):
     version: Literal["v2"] = "v2"
     role_prompt: str
     source_requirements: List[SourceRequirement] = Field(min_length=1)
@@ -62,7 +62,32 @@ class RubricSchemaV2(BaseModel):
     answer_principles: List[str] = Field(default_factory=list)
     retry_policy: List[str] = Field(default_factory=list)
     output_rules: List[str] = Field(default_factory=list)
+
+
+class RubricSchemaCandidate(RubricSchemaContent):
+    inferred_scores: bool = False
+
+
+class RubricSchemaV2(RubricSchemaContent):
     compilation: RubricCompilationMetadata
+
+
+def build_rubric_schema(
+    candidate: RubricSchemaCandidate, compiler_model: str
+) -> RubricSchemaV2:
+    candidate_data = candidate.model_dump()
+    inferred_scores = candidate_data.pop("inferred_scores")
+    return RubricSchemaV2.model_validate(
+        {
+            **candidate_data,
+            "compilation": {
+                "compiler_model": compiler_model,
+                "auditor_model": None,
+                "coverage_passed": False,
+                "inferred_scores": inferred_scores,
+            },
+        }
+    )
 
 
 class CoverageConflict(BaseModel):
