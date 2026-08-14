@@ -90,6 +90,12 @@ class RubricScoreConflict(BaseModel):
     text: str
     source_requirement_ids: List[str] = Field(min_length=1)
 
+    @model_validator(mode="after")
+    def validate_distinct_sources(self) -> "RubricScoreConflict":
+        if len(set(self.source_requirement_ids)) < 2:
+            raise ValueError("score conflict requires at least two distinct sources")
+        return self
+
 
 class RubricNormalization(BaseModel):
     model_config = ConfigDict(extra="forbid")

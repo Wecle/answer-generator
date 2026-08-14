@@ -56,6 +56,24 @@ def test_candidate_rejects_penalty_missing_required_effect_fields():
         RubricSchemaCandidate.model_validate(data)
 
 
+@pytest.mark.parametrize(
+    "source_requirement_ids",
+    [["REQ-003"], ["REQ-003", "REQ-003"]],
+)
+def test_candidate_rejects_score_conflict_without_two_distinct_sources(
+    source_requirement_ids,
+):
+    data = normalized_candidate_data()
+    data["scoring_policy"]["score_conflicts"][0]["source_requirement_ids"] = (
+        source_requirement_ids
+    )
+
+    with pytest.raises(
+        ValueError, match="score conflict requires at least two distinct sources"
+    ):
+        RubricSchemaCandidate.model_validate(data)
+
+
 def test_validator_accepts_complete_100_point_schema():
     validate_rubric_schema(RubricSchemaV2.model_validate(valid_schema_data()))
 
