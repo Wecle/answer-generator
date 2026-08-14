@@ -1,8 +1,39 @@
 import {
   isVerifiedRubricSchemaV2,
   type RubricCompilationState,
+  type RubricPenaltyEffect,
   type RubricSchemaV2
 } from "@answer-generator/shared";
+
+interface ApiRubricScoringPolicy {
+  mode: "normalized_rules";
+  base_max_score: number;
+  bonus_rules: Array<{
+    id: string;
+    text: string;
+    min_score: number;
+    max_score: number;
+    source_requirement_ids: string[];
+  }>;
+  penalty_rules: Array<{
+    id: string;
+    text: string;
+    effect: RubricPenaltyEffect;
+    score?: number | null;
+    min_score?: number | null;
+    max_score?: number | null;
+    source_requirement_ids: string[];
+  }>;
+  score_conflicts: Array<{
+    text: string;
+    source_requirement_ids: string[];
+  }>;
+  normalization: {
+    raw_max_score: number;
+    target_max_score: 100;
+    method: "linear";
+  };
+}
 
 interface ApiRubricSchemaV2 {
   version: "v2";
@@ -12,6 +43,7 @@ interface ApiRubricSchemaV2 {
     text: string;
     kind: "dimension" | "criterion" | "pitfall" | "score" | "global";
   }>;
+  scoring_policy?: ApiRubricScoringPolicy | null;
   global_constraints: Array<{
     id: string;
     text: string;
@@ -199,6 +231,40 @@ function toCamelSchema(schema: ApiRubricSchemaV2): RubricSchemaV2 {
         sourceRequirementIds: pitfall.source_requirement_ids
       }))
     })),
+    scoringPolicy: schema.scoring_policy
+      ? {
+          mode: schema.scoring_policy.mode,
+          baseMaxScore: schema.scoring_policy.base_max_score,
+          bonusRules: schema.scoring_policy.bonus_rules.map((rule) => ({
+            id: rule.id,
+            text: rule.text,
+            minScore: rule.min_score,
+            maxScore: rule.max_score,
+            sourceRequirementIds: rule.source_requirement_ids
+          })),
+          penaltyRules: schema.scoring_policy.penalty_rules.map((rule) => ({
+            id: rule.id,
+            text: rule.text,
+            effect: rule.effect,
+            score: rule.score,
+            minScore: rule.min_score,
+            maxScore: rule.max_score,
+            sourceRequirementIds: rule.source_requirement_ids
+          })),
+          scoreConflicts: schema.scoring_policy.score_conflicts.map(
+            (conflict) => ({
+              text: conflict.text,
+              sourceRequirementIds: conflict.source_requirement_ids
+            })
+          ),
+          normalization: {
+            rawMaxScore: schema.scoring_policy.normalization.raw_max_score,
+            targetMaxScore:
+              schema.scoring_policy.normalization.target_max_score,
+            method: schema.scoring_policy.normalization.method
+          }
+        }
+      : null,
     answerPrinciples: schema.answer_principles,
     retryPolicy: schema.retry_policy,
     outputRules: schema.output_rules,
@@ -247,6 +313,8 @@ function isApiRubricSchemaV2(value: unknown): value is ApiRubricSchemaV2 {
     value.global_constraints.every(isApiMappedItem) &&
     Array.isArray(value.dimensions) &&
     value.dimensions.every(isApiDimension) &&
+    (value.scoring_policy == null ||
+      isApiScoringPolicy(value.scoring_policy)) &&
     isStringArray(value.answer_principles) &&
     isStringArray(value.retry_policy) &&
     isStringArray(value.output_rules) &&
@@ -256,6 +324,103 @@ function isApiRubricSchemaV2(value: unknown): value is ApiRubricSchemaV2 {
     typeof value.compilation.coverage_passed === "boolean" &&
     typeof value.compilation.inferred_scores === "boolean"
   );
+}
+
+const apiPenaltyEffects = new Set<RubricPenaltyEffect>([
+  "deduct",
+  "cap",
+  "set_range",
+  "veto",
+  "qualitative"
+]);
+
+function isApiScoringPolicy(value: unknown): value is ApiRubricScoringPolicy {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, [
+      "mode",
+      "base_max_score",
+      "bonus_rules",
+      "penalty_rules",
+      "score_conflicts",
+      "normalization"
+    ]) &&
+    value.mode === "normalized_rules" &&
+    typeof value.base_max_score === "number" &&
+    Array.isArray(value.bonus_rules) &&
+    value.bonus_rules.every(isApiBonusRule) &&
+    Array.isArray(value.penalty_rules) &&
+    value.penalty_rules.every(isApiPenaltyRule) &&
+    Array.isArray(value.score_conflicts) &&
+    value.score_conflicts.every(isApiScoreConflict) &&
+    isRecord(value.normalization) &&
+    hasOnlyKeys(value.normalization, [
+      "raw_max_score",
+      "target_max_score",
+      "method"
+    ]) &&
+    typeof value.normalization.raw_max_score === "number" &&
+    value.normalization.target_max_score === 100 &&
+    value.normalization.method === "linear"
+  );
+}
+
+function isApiBonusRule(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, [
+      "id",
+      "text",
+      "min_score",
+      "max_score",
+      "source_requirement_ids"
+    ]) &&
+    typeof value.id === "string" &&
+    typeof value.text === "string" &&
+    typeof value.min_score === "number" &&
+    typeof value.max_score === "number" &&
+    isStringArray(value.source_requirement_ids)
+  );
+}
+
+function isApiPenaltyRule(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, [
+      "id",
+      "text",
+      "effect",
+      "score",
+      "min_score",
+      "max_score",
+      "source_requirement_ids"
+    ]) &&
+    typeof value.id === "string" &&
+    typeof value.text === "string" &&
+    typeof value.effect === "string" &&
+    apiPenaltyEffects.has(value.effect as RubricPenaltyEffect) &&
+    (value.score == null || typeof value.score === "number") &&
+    (value.min_score == null || typeof value.min_score === "number") &&
+    (value.max_score == null || typeof value.max_score === "number") &&
+    isStringArray(value.source_requirement_ids)
+  );
+}
+
+function isApiScoreConflict(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ["text", "source_requirement_ids"]) &&
+    typeof value.text === "string" &&
+    isStringArray(value.source_requirement_ids)
+  );
+}
+
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  allowedKeys: readonly string[]
+): boolean {
+  const allowed = new Set(allowedKeys);
+  return Object.keys(value).every((key) => allowed.has(key));
 }
 
 function isApiMappedItem(value: unknown): boolean {

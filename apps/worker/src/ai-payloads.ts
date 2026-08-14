@@ -110,6 +110,39 @@ function toApiRubricSchema(schema: RubricSchemaV2) {
         source_requirement_ids: pitfall.sourceRequirementIds
       }))
     })),
+    scoring_policy: schema.scoringPolicy
+      ? {
+          mode: schema.scoringPolicy.mode,
+          base_max_score: schema.scoringPolicy.baseMaxScore,
+          bonus_rules: schema.scoringPolicy.bonusRules.map((rule) => ({
+            id: rule.id,
+            text: rule.text,
+            min_score: rule.minScore,
+            max_score: rule.maxScore,
+            source_requirement_ids: rule.sourceRequirementIds
+          })),
+          penalty_rules: schema.scoringPolicy.penaltyRules.map((rule) => ({
+            id: rule.id,
+            text: rule.text,
+            effect: rule.effect,
+            score: rule.score ?? null,
+            min_score: rule.minScore ?? null,
+            max_score: rule.maxScore ?? null,
+            source_requirement_ids: rule.sourceRequirementIds
+          })),
+          score_conflicts: schema.scoringPolicy.scoreConflicts.map(
+            (conflict) => ({
+              text: conflict.text,
+              source_requirement_ids: conflict.sourceRequirementIds
+            })
+          ),
+          normalization: {
+            raw_max_score: schema.scoringPolicy.normalization.rawMaxScore,
+            target_max_score: schema.scoringPolicy.normalization.targetMaxScore,
+            method: schema.scoringPolicy.normalization.method
+          }
+        }
+      : null,
     answer_principles: schema.answerPrinciples,
     retry_policy: schema.retryPolicy,
     output_rules: schema.outputRules,

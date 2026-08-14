@@ -60,3 +60,65 @@ export const verifiedSchemaFixture: RubricSchemaV2 = {
     inferredScores: false
   }
 };
+
+export const normalizedSchemaFixture: RubricSchemaV2 = {
+  ...verifiedSchemaFixture,
+  sourceRequirements: [
+    ...verifiedSchemaFixture.sourceRequirements,
+    { id: "REQ-003", text: "有画面", kind: "score" },
+    { id: "REQ-004", text: "有人味儿", kind: "score" },
+    { id: "REQ-005", text: "答非所问掉档", kind: "score" },
+    { id: "REQ-006", text: "超时印象分大扣", kind: "score" }
+  ],
+  dimensions: [
+    { ...verifiedSchemaFixture.dimensions[0], maxScore: 40 },
+    { ...verifiedSchemaFixture.dimensions[1], maxScore: 35 }
+  ],
+  scoringPolicy: {
+    mode: "normalized_rules",
+    baseMaxScore: 75,
+    bonusRules: [
+      {
+        id: "BONUS-001",
+        text: "有画面可加2-4分",
+        minScore: 2,
+        maxScore: 4,
+        sourceRequirementIds: ["REQ-003"]
+      },
+      {
+        id: "BONUS-002",
+        text: "有人味儿可加2-3分",
+        minScore: 2,
+        maxScore: 3,
+        sourceRequirementIds: ["REQ-004"]
+      }
+    ],
+    penaltyRules: [
+      {
+        id: "PEN-001",
+        text: "答非所问掉到60-70分",
+        effect: "set_range",
+        minScore: 60,
+        maxScore: 70,
+        sourceRequirementIds: ["REQ-005"]
+      },
+      {
+        id: "PEN-002",
+        text: "超时印象分大扣",
+        effect: "qualitative",
+        sourceRequirementIds: ["REQ-006"]
+      }
+    ],
+    scoreConflicts: [
+      {
+        text: "档位标题与逐项上限不一致",
+        sourceRequirementIds: ["REQ-003", "REQ-004"]
+      }
+    ],
+    normalization: {
+      rawMaxScore: 82,
+      targetMaxScore: 100,
+      method: "linear"
+    }
+  }
+};
