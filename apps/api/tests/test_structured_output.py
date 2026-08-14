@@ -51,6 +51,26 @@ def test_strict_schema_inlines_refs_and_requires_every_property():
     assert schema["properties"]["version"]["enum"] == ["v2"]
 
 
+def test_strict_schema_represents_optional_penalty_scores_as_nullable():
+    schema = strict_json_schema(RubricSchemaCandidate)
+    policy_schema = next(
+        option
+        for option in schema["properties"]["scoring_policy"]["anyOf"]
+        if option.get("type") == "object"
+    )
+    penalty_properties = policy_schema["properties"]["penalty_rules"][
+        "items"
+    ]["properties"]
+
+    for field_name in ("score", "min_score", "max_score"):
+        options = penalty_properties[field_name]["anyOf"]
+        assert {option["type"] for option in options} == {"integer", "null"}
+
+    serialized = json.dumps(schema)
+    for unsupported in ("default", "title", "minItems", "maxItems"):
+        assert f'"{unsupported}"' not in serialized
+
+
 class FakeResponse:
     def __init__(self, payload: dict, status_code: int = 200):
         self._payload = payload

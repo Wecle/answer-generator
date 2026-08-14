@@ -10,7 +10,12 @@ from app.services.rubric_compiler import (
     compile_rubric,
 )
 import app.services.rubric_compiler as rubric_compiler
-from tests.rubric_fixtures import valid_candidate_data, valid_schema_data
+from tests.rubric_fixtures import (
+    normalized_candidate_data,
+    normalized_schema_data,
+    valid_candidate_data,
+    valid_schema_data,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -26,6 +31,46 @@ def make_request() -> CompileRubricRequest:
         answer_minutes=2,
         passing_score=95,
     )
+
+
+def test_compile_prompt_describes_complex_scoring_policy():
+    prompt = rubric_compiler._build_compile_prompt(make_request())
+
+    assert "区间加分" in prompt
+    assert "bonus_rules" in prompt
+    assert "penalty_rules" in prompt
+    assert "score_conflicts" in prompt
+    assert "不得把区间加分合并成固定维度" in prompt
+    assert "原文完全没有分值" in prompt
+    assert "scoring_policy返回null" in prompt
+    assert '"target_max_score": 100' in prompt
+    assert '"method": "linear"' in prompt
+    for effect in ("deduct", "cap", "set_range", "veto", "qualitative"):
+        assert effect in prompt
+
+
+def test_audit_and_repair_prompts_preserve_normalized_scoring_policy():
+    schema = rubric_compiler.RubricSchemaV2.model_validate(
+        normalized_schema_data()
+    )
+
+    audit_prompt = rubric_compiler._build_audit_prompt(make_request(), schema)
+    repair_prompt = rubric_compiler._build_repair_prompt(
+        make_request(), schema, {"score_issues": ["检查复杂分值"]}
+    )
+    structure_repair_prompt = rubric_compiler._build_structure_repair_prompt(
+        make_request(), normalized_candidate_data(), []
+    )
+
+    assert "score_conflicts" in audit_prompt
+    assert "双方" in audit_prompt
+    assert "固定维度" in audit_prompt
+    assert "pitfall" in audit_prompt
+    assert "scoring_policy" in repair_prompt
+    assert "不得将 normalized_rules 改回固定100分" in repair_prompt
+    assert "不得将 normalized_rules 改回固定100分" in structure_repair_prompt
+    assert '"target_max_score": 100' in structure_repair_prompt
+    assert '"method": "linear"' in structure_repair_prompt
 
 
 def install_fake_completions(monkeypatch, responses: list[str]) -> list[dict]:
@@ -144,6 +189,28 @@ async def test_compile_pipeline_compiles_and_audits_without_repair(monkeypatch):
     assert "评分标准编译器" in calls[0]["messages"][0]["content"]
     assert "独立的评分标准覆盖审计员" in calls[1]["messages"][0]["content"]
     assert "独立审计" in calls[1]["messages"][1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_compile_pipeline_accepts_normalized_policy_without_repair(
+    monkeypatch,
+):
+    calls = install_fake_completions(
+        monkeypatch,
+        [
+            json.dumps(normalized_candidate_data(), ensure_ascii=False),
+            json.dumps(audit_result(), ensure_ascii=False),
+        ],
+    )
+
+    result = await _compile_with_openai(make_request(), "test-key")
+
+    policy = result.rubric_schema.scoring_policy
+    assert policy is not None
+    assert sum(item.max_score for item in result.rubric_schema.dimensions) == 75
+    assert policy.base_max_score == 75
+    assert policy.normalization.raw_max_score == 82
+    assert len(calls) == 2
 
 
 @pytest.mark.asyncio

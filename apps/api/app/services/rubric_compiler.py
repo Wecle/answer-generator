@@ -62,10 +62,63 @@ RUBRIC_CANDIDATE_EXAMPLE = {
             ],
         }
     ],
+    "scoring_policy": None,
     "answer_principles": ["围绕题目作答"],
     "retry_policy": ["定向修复低分项"],
     "output_rules": ["输出纯文本"],
     "inferred_scores": False,
+}
+
+RUBRIC_NORMALIZED_POLICY_EXAMPLE = {
+    "mode": "normalized_rules",
+    "base_max_score": 75,
+    "bonus_rules": [
+        {
+            "id": "BONUS-001",
+            "text": "有画面可加2-4分",
+            "min_score": 2,
+            "max_score": 4,
+            "source_requirement_ids": ["REQ-003"],
+        },
+        {
+            "id": "BONUS-002",
+            "text": "有人味儿可加2-3分",
+            "min_score": 2,
+            "max_score": 3,
+            "source_requirement_ids": ["REQ-004"],
+        },
+    ],
+    "penalty_rules": [
+        {
+            "id": "PEN-001",
+            "text": "答非所问掉到60-70分",
+            "effect": "set_range",
+            "score": None,
+            "min_score": 60,
+            "max_score": 70,
+            "source_requirement_ids": ["REQ-005"],
+        },
+        {
+            "id": "PEN-002",
+            "text": "超时印象分大扣",
+            "effect": "qualitative",
+            "score": None,
+            "min_score": None,
+            "max_score": None,
+            "source_requirement_ids": ["REQ-006"],
+        },
+    ],
+    "score_conflicts": [
+        {
+            "text": "档位标题与逐项上限不一致",
+            "source_requirement_ids": ["REQ-003", "REQ-004"],
+        }
+    ],
+    "normalization": {
+        "raw_max_score": 82,
+        "target_max_score": 100,
+        "method": "linear",
+    },
 }
 
 
@@ -297,16 +350,29 @@ def _build_compile_prompt(request: CompileRubricRequest) -> str:
     return (
         "请一次完成原子要求提取与 RubricSchema v2 编译，只输出完整 JSON，不要解释。\n"
         "必须返回 version=v2、role_prompt、source_requirements、global_constraints、dimensions、"
-        "answer_principles、retry_policy、output_rules 和 inferred_scores。\n"
+        "scoring_policy、answer_principles、retry_policy、output_rules 和 inferred_scores。\n"
         "source_requirements 的 kind 只能是 dimension、criterion、pitfall、score、global；"
-        "每条原子要求必须通过 source_requirement_ids 映射到维度、criterion、pitfall 或全局约束。\n"
+        "每条原子要求必须通过 source_requirement_ids 映射到维度、criterion、pitfall、全局约束、"
+        "bonus_rules、penalty_rules 或 score_conflicts。\n"
         "每个维度必须有稳定 DIM ID、唯一非空名称、正整数 max_score、至少一个 criterion 和 pitfall；"
-        "criterion 与 pitfall 使用稳定 CRI/PIT ID 且必须映射来源。所有维度分值总和必须为 100。\n"
+        "criterion 与 pitfall 使用稳定 CRI/PIT ID 且必须映射来源。\n"
+        "固定分合计明确为100时，scoring_policy返回null，所有维度分值总和必须为100。"
+        "原文完全没有分值时也返回null，将维度权重推断为合计100并设置inferred_scores=true。"
+        "存在基础分、区间加分、扣分、掉档、封顶或否决时，必须返回normalized_rules。\n"
+        "不得把区间加分合并成固定维度或为了凑100分推断固定权重。"
+        "区间加分写入bonus_rules；扣分、掉档、封顶、否决和无数值定性规则写入penalty_rules。"
+        "原文数值冲突必须同时保留双方，并写入score_conflicts。"
+        "raw_max_score必须等于base_max_score加所有bonus_rules.max_score。\n"
+        "penalty effect 只能是 deduct、cap、set_range、veto、qualitative：deduct使用score，"
+        "cap使用max_score，set_range使用min_score和max_score，veto与qualitative的数值字段返回null。"
+        "normalization的target_max_score必须为100，method必须为linear。\n"
         "原文完全没有分值时才可推断权重并设置 inferred_scores=true；部分分值、冲突分值或"
         "明确分值总和有歧义时不得静默补全。\n"
         "只返回候选业务字段；不要返回 compilation。inferred_scores 必须是布尔值。\n"
         "档位描述中的重复表达应归并，不得把优/良/中/差本身提取成维度；不得新增原文不支持的业务要求。\n\n"
         f"完整 JSON 形状示例：\n{json.dumps(RUBRIC_CANDIDATE_EXAMPLE, ensure_ascii=False)}\n\n"
+        "normalized_rules 的 scoring_policy 完整形状示例：\n"
+        f"{json.dumps(RUBRIC_NORMALIZED_POLICY_EXAMPLE, ensure_ascii=False)}\n\n"
         f"答题时间：{request.answer_minutes} 分钟\n"
         "通过分数仅用于生成后的运行判断，不得提取为原子要求，也不得用于维度权重推断。\n"
         f"原始评分标准：\n{request.rubric}"
@@ -319,9 +385,13 @@ def _build_audit_prompt(
     return (
         "请独立审计候选 Schema 是否完整、忠实地覆盖原始评分标准。只输出 CoverageAuditResult JSON。\n"
         "不得沿用编译器结论；逐项检查遗漏、无原文依据的新增内容、语义弱化和分值问题。"
-        "原文完全无分值时才允许 inferred_scores=true；原文部分有分值、分值冲突或明确分值总和不正确时"
-        "必须写入 score_issues。\n"
-        "确定性校验摘要：候选 Schema 的 ID、引用、映射和 100 分总分校验已通过。\n\n"
+        "原文完全无分值时才允许 inferred_scores=true；原文部分有分值却被静默补全、明确分值总和不正确，"
+        "或分值冲突未完整记录时，必须写入 score_issues。原文冲突双方均通过 source_requirement_ids "
+        "完整映射到同一条 score_conflicts 时，应视为已忠实保存，不得仅因冲突存在判定失败。\n"
+        "逐项检查固定维度、bonus_rules 和 penalty_rules 是否分别映射原文，区间端点是否忠实，"
+        "不得接受把区间加分合并成固定维度，也不得接受把扣分、掉档、封顶、否决或定性规则只藏在 pitfall 文本中。"
+        "检查 normalization 是否能由 base_max_score 与 bonus_rules 的上限确定性计算。\n"
+        "确定性校验摘要：候选 Schema 的 ID、引用、映射以及固定100分或 normalized_rules 分值校验已通过。\n\n"
         f"原始评分标准：\n{request.rubric}\n\n"
         f"提取出的原子要求：\n{json.dumps([item.model_dump() for item in schema.source_requirements], ensure_ascii=False)}\n\n"
         f"候选 Schema：\n{schema.model_dump_json()}"
@@ -333,7 +403,8 @@ def _build_repair_prompt(
 ) -> str:
     return (
         "只修复校验或审计报告指出的问题，保留其余已验证内容。输出完整候选 JSON。\n"
-        "不得新增修复报告未要求的业务规则；不要返回 compilation。\n\n"
+        "不得新增修复报告未要求的业务规则；不要返回 compilation。必须保留 scoring_policy，"
+        "不得将 normalized_rules 改回固定100分，也不得合并区间加分或弱化 penalty_rules。\n\n"
         f"原始评分标准：\n{request.rubric}\n\n"
         f"候选 Schema：\n{schema.model_dump_json()}\n\n"
         f"修复报告：\n{json.dumps(errors, ensure_ascii=False)}"
@@ -346,11 +417,15 @@ def _build_structure_repair_prompt(
     errors: list[dict[str, Any]],
 ) -> str:
     return (
-        "只修复结构校验报告指出的问题，输出完整候选 JSON，不要返回 compilation。\n"
+        "只修复结构校验报告指出的问题，输出完整候选 JSON，不要返回 compilation。"
+        "必须保留 scoring_policy，不得将 normalized_rules 改回固定100分，"
+        "也不得合并区间加分或弱化 penalty_rules。\n"
         f"原始评分标准：\n{request.rubric}\n\n"
         f"无效候选 JSON：\n{json.dumps(candidate_data, ensure_ascii=False)}\n\n"
         f"Pydantic 结构错误：\n{json.dumps(errors, ensure_ascii=False)}\n\n"
-        f"完整 JSON 形状示例：\n{json.dumps(RUBRIC_CANDIDATE_EXAMPLE, ensure_ascii=False)}"
+        f"完整 JSON 形状示例：\n{json.dumps(RUBRIC_CANDIDATE_EXAMPLE, ensure_ascii=False)}\n\n"
+        "normalized_rules 的 scoring_policy 完整形状示例：\n"
+        f"{json.dumps(RUBRIC_NORMALIZED_POLICY_EXAMPLE, ensure_ascii=False)}"
     )
 
 
