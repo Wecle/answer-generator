@@ -20,6 +20,9 @@ def validate_rubric_schema(schema: RubricSchemaV2) -> None:
     ids += [
         pitfall.id for dimension in schema.dimensions for pitfall in dimension.pitfalls
     ]
+    if schema.scoring_policy is not None:
+        ids += [rule.id for rule in schema.scoring_policy.bonus_rules]
+        ids += [rule.id for rule in schema.scoring_policy.penalty_rules]
     duplicates = sorted({value for value in ids if ids.count(value) > 1})
     if duplicates:
         raise RubricSchemaValidationError("DUPLICATE_ID", {"ids": duplicates})
@@ -28,9 +31,30 @@ def validate_rubric_schema(schema: RubricSchemaV2) -> None:
     if len(set(names)) != len(names):
         raise RubricSchemaValidationError("DUPLICATE_DIMENSION", {"names": names})
 
-    total = sum(dimension.max_score for dimension in schema.dimensions)
-    if total != 100:
-        raise RubricSchemaValidationError("INVALID_SCORE_TOTAL", {"total": total})
+    policy = schema.scoring_policy
+    dimension_total = sum(dimension.max_score for dimension in schema.dimensions)
+    if policy is None:
+        if dimension_total != 100:
+            raise RubricSchemaValidationError(
+                "INVALID_SCORE_TOTAL", {"total": dimension_total}
+            )
+    else:
+        if dimension_total != policy.base_max_score:
+            raise RubricSchemaValidationError(
+                "INVALID_BASE_SCORE_TOTAL",
+                {"total": dimension_total, "expected": policy.base_max_score},
+            )
+        expected_raw_max = policy.base_max_score + sum(
+            rule.max_score for rule in policy.bonus_rules
+        )
+        if policy.normalization.raw_max_score != expected_raw_max:
+            raise RubricSchemaValidationError(
+                "INVALID_RAW_MAX_SCORE",
+                {
+                    "actual": policy.normalization.raw_max_score,
+                    "expected": expected_raw_max,
+                },
+            )
 
     requirement_ids = {
         requirement.id for requirement in schema.source_requirements
@@ -61,6 +85,29 @@ def validate_rubric_schema(schema: RubricSchemaV2) -> None:
                 "UNKNOWN_REQUIREMENT", {"ids": unknown}
             )
         mapped_ids.update(references)
+
+    if policy is not None:
+        policy_references = [
+            requirement_id
+            for rule in policy.bonus_rules
+            for requirement_id in rule.source_requirement_ids
+        ]
+        policy_references += [
+            requirement_id
+            for rule in policy.penalty_rules
+            for requirement_id in rule.source_requirement_ids
+        ]
+        policy_references += [
+            requirement_id
+            for conflict in policy.score_conflicts
+            for requirement_id in conflict.source_requirement_ids
+        ]
+        unknown = sorted(set(policy_references) - requirement_ids)
+        if unknown:
+            raise RubricSchemaValidationError(
+                "UNKNOWN_REQUIREMENT", {"ids": unknown}
+            )
+        mapped_ids.update(policy_references)
 
     unmapped = sorted(requirement_ids - mapped_ids)
     if unmapped:

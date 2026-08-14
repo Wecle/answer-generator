@@ -37,6 +37,79 @@ class RubricGlobalConstraint(BaseModel):
     source_requirement_ids: List[str] = Field(min_length=1)
 
 
+class RubricBonusRule(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    text: str
+    min_score: int = Field(ge=0)
+    max_score: int = Field(gt=0)
+    source_requirement_ids: List[str] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "RubricBonusRule":
+        if self.min_score > self.max_score:
+            raise ValueError("bonus min_score must not exceed max_score")
+        return self
+
+
+class RubricPenaltyRule(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    text: str
+    effect: Literal["deduct", "cap", "set_range", "veto", "qualitative"]
+    score: Optional[int] = Field(default=None, gt=0)
+    min_score: Optional[int] = Field(default=None, ge=0, le=100)
+    max_score: Optional[int] = Field(default=None, ge=0, le=100)
+    source_requirement_ids: List[str] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_effect_fields(self) -> "RubricPenaltyRule":
+        if self.effect == "deduct" and self.score is None:
+            raise ValueError("deduct requires score")
+        if self.effect == "cap" and self.max_score is None:
+            raise ValueError("cap requires max_score")
+        if self.effect == "set_range" and (
+            self.min_score is None or self.max_score is None
+        ):
+            raise ValueError("set_range requires min_score and max_score")
+        if (
+            self.effect == "set_range"
+            and self.min_score is not None
+            and self.max_score is not None
+            and self.min_score > self.max_score
+        ):
+            raise ValueError("penalty min_score must not exceed max_score")
+        return self
+
+
+class RubricScoreConflict(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+    source_requirement_ids: List[str] = Field(min_length=1)
+
+
+class RubricNormalization(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    raw_max_score: int = Field(gt=0)
+    target_max_score: Literal[100] = 100
+    method: Literal["linear"] = "linear"
+
+
+class RubricScoringPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["normalized_rules"] = "normalized_rules"
+    base_max_score: int = Field(gt=0)
+    bonus_rules: List[RubricBonusRule] = Field(default_factory=list)
+    penalty_rules: List[RubricPenaltyRule] = Field(default_factory=list)
+    score_conflicts: List[RubricScoreConflict] = Field(default_factory=list)
+    normalization: RubricNormalization
+
+
 class RubricDimensionSchemaV2(BaseModel):
     id: str
     name: str
@@ -59,6 +132,7 @@ class RubricSchemaContent(BaseModel):
     source_requirements: List[SourceRequirement] = Field(min_length=1)
     global_constraints: List[RubricGlobalConstraint] = Field(default_factory=list)
     dimensions: List[RubricDimensionSchemaV2] = Field(min_length=1)
+    scoring_policy: Optional[RubricScoringPolicy] = None
     answer_principles: List[str] = Field(default_factory=list)
     retry_policy: List[str] = Field(default_factory=list)
     output_rules: List[str] = Field(default_factory=list)
