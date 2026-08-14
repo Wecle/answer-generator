@@ -1,30 +1,73 @@
 import pytest
 
-from app.models import GenerateAnswerResponse, ReviewAnswerRequest, ReviewAnswerResponse, ReviewDimension, RunItemRequest
+from app.models import (
+    FailedCriterion,
+    GenerateAnswerResponse,
+    PromptMetadata,
+    ReviewAnswerResponse,
+    ReviewDimension,
+    RubricSchemaV2,
+    RunItemRequest,
+)
 import app.services.orchestrator as orchestrator
 from app.services.orchestrator import run_item
-from app.services.reviewer import review_answer
+from tests.rubric_fixtures import valid_schema_data
+
+
+def verified_schema() -> RubricSchemaV2:
+    data = valid_schema_data()
+    data["compilation"].update({"auditor_model": "test-auditor", "coverage_passed": True})
+    return RubricSchemaV2.model_validate(data)
+
+
+def generated_response(answer: str) -> GenerateAnswerResponse:
+    return GenerateAnswerResponse(
+        answer=answer,
+        model="test-ai",
+        prompt_metadata=PromptMetadata(
+            loaded_sections=["base_role", "rubric_constraints", "question", "length", "output_rules"]
+        ),
+    )
+
+
+def review_response(*, score: int, passed: bool) -> ReviewAnswerResponse:
+    return ReviewAnswerResponse(
+        total_score=score,
+        passed=passed,
+        dimensions=[
+            ReviewDimension(
+                dimension_id="DIM-001",
+                name="综合分析",
+                score=min(score, 50),
+                max_score=50,
+            ),
+            ReviewDimension(
+                dimension_id="DIM-002",
+                name="解决问题",
+                score=max(0, score - 50),
+                max_score=50,
+            ),
+        ],
+        failed_criteria=[] if passed else [
+            FailedCriterion(
+                criterion_id="CRI-002",
+                reason="缺少闭环",
+                repair_instruction="补充反馈整改",
+            )
+        ],
+        preserved_criteria_ids=["CRI-001", "CRI-002"] if passed else ["CRI-001"],
+        reasons=["已通过"] if passed else ["需要形成闭环"],
+        reviewer_model="test-ai",
+    )
 
 
 @pytest.mark.asyncio
 async def test_run_item_passes_within_attempt_limit(monkeypatch):
-    async def fake_generate_answer(request):
-        return GenerateAnswerResponse(
-            answer="审题准确，逻辑清晰，措施可行，回应群众需求，建立闭环管理。",
-            model="test-ai",
-            prompt_version="test",
-        )
+    async def fake_generate_answer(_request):
+        return generated_response("审题准确，逻辑清晰，措施可行，回应群众需求，建立闭环管理。")
 
-    async def fake_review_answer(request):
-        return ReviewAnswerResponse(
-            total_score=95,
-            passed=True,
-            dimensions=[
-                ReviewDimension(name="审题准确、逻辑清晰、措施可行、群众需求、闭环管理", score=95, max_score=100)
-            ],
-            reasons=["已通过"],
-            reviewer_model="test-ai",
-        )
+    async def fake_review_answer(_request):
+        return review_response(score=95, passed=True)
 
     monkeypatch.setattr(orchestrator, "generate_answer", fake_generate_answer)
     monkeypatch.setattr(orchestrator, "review_answer", fake_review_answer)
@@ -33,54 +76,37 @@ async def test_run_item_passes_within_attempt_limit(monkeypatch):
         RunItemRequest(
             material="材料：某地推进政务服务改革，群众办事效率明显提升。",
             question="请谈谈如何进一步提升政务服务质量？",
-            rubric="审题准确、逻辑清晰、措施可行、群众需求、闭环管理",
+            rubric_schema=verified_schema(),
             answer_minutes=2,
+            target_min_words=420,
             target_words=520,
+            target_max_words=620,
             passing_score=90,
             max_attempts=3,
         )
     )
 
     assert result.status == "passed"
-    assert result.final_score >= 90
-    assert len(result.attempts) >= 1
-    assert [dimension.name for dimension in result.attempts[-1].review.dimensions] == ["审题准确、逻辑清晰、措施可行、群众需求、闭环管理"]
+    assert result.final_score == 95
+    assert len(result.attempts) == 1
+    assert result.attempts[0].review.dimensions[0].dimension_id == "DIM-001"
 
 
 @pytest.mark.asyncio
-async def test_reviewer_uses_user_rubric_dimensions_and_constructive_feedback():
-    review = await review_answer(
-        ReviewAnswerRequest(
-            question="请谈谈如何提升基层治理能力。",
-            rubric="#### 维度一：群众需求（满分50分）\n- 回应群众诉求\n- 建立反馈渠道\n\n#### 维度二：闭环管理（满分50分）\n- 明确责任主体\n- 跟踪整改效果",
-            answer="要回应群众诉求，明确责任主体。",
-            passing_score=95,
-        )
-    )
+async def test_run_item_passes_structured_review_feedback_to_retry(monkeypatch):
+    generation_requests = []
+    review_calls = 0
 
-    assert [dimension.name for dimension in review.dimensions] == ["群众需求", "闭环管理"]
-    assert review.total_score < 95
-    assert any("反馈渠道" in reason for reason in review.reasons)
-    assert any("跟踪整改效果" in reason for reason in review.reasons)
-
-
-@pytest.mark.asyncio
-async def test_generation_covers_user_rubric_terms(monkeypatch):
     async def fake_generate_answer(request):
-        return GenerateAnswerResponse(
-            answer="围绕基层协同、责任闭环、群众参与、数字治理展开作答。",
-            model="test-ai",
-            prompt_version="test",
-        )
+        generation_requests.append(request)
+        return generated_response(f"第 {len(generation_requests)} 次答案")
 
-    async def fake_review_answer(request):
-        return ReviewAnswerResponse(
-            total_score=96,
-            passed=True,
-            dimensions=[ReviewDimension(name="用户评分标准", score=96, max_score=100)],
-            reasons=["已通过"],
-            reviewer_model="test-ai",
-        )
+    async def fake_review_answer(_request):
+        nonlocal review_calls
+        review_calls += 1
+        if review_calls == 1:
+            return review_response(score=80, passed=False)
+        return review_response(score=96, passed=True)
 
     monkeypatch.setattr(orchestrator, "generate_answer", fake_generate_answer)
     monkeypatch.setattr(orchestrator, "review_answer", fake_review_answer)
@@ -88,45 +114,85 @@ async def test_generation_covers_user_rubric_terms(monkeypatch):
     result = await run_item(
         RunItemRequest(
             question="请分析基层治理中的协同问题。",
-            rubric="基层协同、责任闭环、群众参与、数字治理",
+            rubric_schema=verified_schema(),
             answer_minutes=1,
+            target_min_words=220,
             target_words=260,
+            target_max_words=300,
             passing_score=95,
             max_attempts=2,
         )
     )
 
     assert result.status == "passed"
-    assert "责任闭环" in result.final_answer
-    assert "群众参与" in result.final_answer
-    assert "数字治理" in result.final_answer
+    assert len(generation_requests) == 2
+    assert generation_requests[0].previous_feedback is None
+    feedback = generation_requests[1].previous_feedback
+    assert feedback is not None
+    assert feedback.failed_criteria[0].criterion_id == "CRI-002"
+    assert feedback.failed_criteria[0].repair_instruction == "补充反馈整改"
+    assert feedback.preserved_criteria_ids == ["CRI-001"]
+    assert feedback.reasons == ["需要形成闭环"]
 
 
 @pytest.mark.asyncio
-async def test_run_item_generates_separate_plain_text_answers_for_multiple_questions(monkeypatch):
+async def test_run_item_forwards_all_word_bounds_and_schema_only(monkeypatch):
+    captured = None
+
     async def fake_generate_answer(request):
-        return GenerateAnswerResponse(
-            answer="第 1 题\n回应群众需求，建立闭环管理。\n\n第 2 题\n推进数字治理，更好服务群众。",
-            model="test-ai",
-            prompt_version="test",
-        )
+        nonlocal captured
+        captured = request
+        return generated_response("答案")
+
+    async def fake_review_answer(_request):
+        return review_response(score=95, passed=True)
 
     monkeypatch.setattr(orchestrator, "generate_answer", fake_generate_answer)
+    monkeypatch.setattr(orchestrator, "review_answer", fake_review_answer)
+
+    await run_item(
+        RunItemRequest(
+            question="问题",
+            rubric_schema=verified_schema(),
+            answer_minutes=2,
+            target_min_words=420,
+            target_words=520,
+            target_max_words=620,
+        )
+    )
+
+    assert captured is not None
+    assert captured.target_min_words == 420
+    assert captured.target_words == 520
+    assert captured.target_max_words == 620
+    assert captured.rubric_schema.version == "v2"
+    assert not hasattr(captured, "rubric")
+    assert not hasattr(captured, "compiled_prompt")
+
+
+@pytest.mark.asyncio
+async def test_run_item_returns_last_attempt_when_limit_is_reached(monkeypatch):
+    async def fake_generate_answer(_request):
+        return generated_response("尚需完善的答案")
+
+    async def fake_review_answer(_request):
+        return review_response(score=80, passed=False)
+
+    monkeypatch.setattr(orchestrator, "generate_answer", fake_generate_answer)
+    monkeypatch.setattr(orchestrator, "review_answer", fake_review_answer)
 
     result = await run_item(
         RunItemRequest(
-            material="材料 1\n某地窗口服务存在排队时间长的问题。\n\n材料 2\n某社区正在推进数字治理。",
-            question="问题 1\n请谈谈如何提升窗口服务效率？\n\n问题 2\n请分析数字治理如何更好服务群众？",
-            rubric="## 评分标准\n- 群众需求\n- 闭环管理\n- 数字治理",
+            question="问题",
+            rubric_schema=verified_schema(),
             answer_minutes=1,
+            target_min_words=220,
             target_words=260,
-            passing_score=85,
+            target_max_words=300,
             max_attempts=2,
         )
     )
 
-    assert "第 1 题" in result.final_answer
-    assert "第 2 题" in result.final_answer
-    assert "参考答案：" not in result.final_answer
-    assert "#" not in result.final_answer
-    assert "**" not in result.final_answer
+    assert result.status == "needs_review"
+    assert len(result.attempts) == 2
+    assert result.reasons == ["需要形成闭环"]

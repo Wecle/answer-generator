@@ -5,13 +5,20 @@ import {
   answerGenerationReviews,
   createDb
 } from "@answer-generator/db";
-import type {
-  PersistedRubricSchema,
-  RubricSchemaV1
-} from "@answer-generator/shared";
+import type { PromptMetadata } from "@answer-generator/shared";
 import { Queue, QueueEvents, Worker } from "bullmq";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { loadProjectEnv } from "./env";
+import {
+  buildGeneratePayload,
+  buildReviewPayload,
+  toRetryFeedback,
+  type RetryFeedback
+} from "./ai-payloads";
+import {
+  verifyClaimedRubricSchema,
+  type ClaimedSchemaFailure
+} from "./claimed-schema";
 
 loadProjectEnv();
 
@@ -25,12 +32,31 @@ interface GenerateAnswerResponse {
   answer: string;
   model: string;
   prompt_version: string;
+  prompt_metadata: {
+    pipeline_version: "generation-pipe-v1";
+    schema_version: "rubric-schema-v2";
+    base_prompt_version: "base-v1";
+    rubric_prompt_version: "rubric-v1";
+    retry_prompt_version: "retry-v1";
+    loaded_sections: string[];
+  };
 }
 
 interface ReviewAnswerResponse {
   total_score: number;
   passed: boolean;
-  dimensions: Array<{ name: string; score: number; max_score: number }>;
+  dimensions: Array<{
+    dimension_id: string;
+    name: string;
+    score: number;
+    max_score: number;
+  }>;
+  failed_criteria: Array<{
+    criterion_id: string;
+    reason: string;
+    repair_instruction: string;
+  }>;
+  preserved_criteria_ids: string[];
   reasons: string[];
   reviewer_model: string;
 }
@@ -90,6 +116,20 @@ const worker = new Worker<RunJobPayload>(
       return;
     }
 
+    const rubricSchema = await verifyClaimedRubricSchema(
+      job.rubricSchema,
+      queueJob.data.compilationId,
+      (failure) =>
+        failClaimedJobForInvalidSchema(
+          job.id,
+          queueJob.data.compilationId,
+          failure
+        )
+    );
+    if (!rubricSchema) {
+      return;
+    }
+
     const initialItems = await db
       .select()
       .from(answerGenerationItems)
@@ -99,7 +139,7 @@ const worker = new Worker<RunJobPayload>(
       await clearItemAttempts(item.id);
     }
 
-    const feedbackByItem = new Map<string, string[]>();
+    const feedbackByItem = new Map<string, RetryFeedback>();
 
     for (let attemptNumber = 1; attemptNumber <= job.maxAttempts; attemptNumber += 1) {
       if (await isCancelled(job.id)) {
@@ -129,12 +169,12 @@ const worker = new Worker<RunJobPayload>(
           const generated = await generateAnswer({
             material: item.material,
             question: item.question,
-            rubric: job.rubric,
-            compiledPrompt: job.compiledPrompt,
-            rubricSchema: toLegacyRubricSchema(job.rubricSchema),
+            rubricSchema,
             answerMinutes: Number(job.answerMinutes),
+            targetMinWords: item.targetMinWords,
             targetWords: item.targetWords,
-            previousFeedback: feedbackByItem.get(item.id) ?? []
+            targetMaxWords: item.targetMaxWords,
+            previousFeedback: feedbackByItem.get(item.id) ?? null
           });
 
           const [createdAttempt] = await db
@@ -144,6 +184,7 @@ const worker = new Worker<RunJobPayload>(
               attemptNumber,
               status: "generated",
               promptVersion: generated.prompt_version,
+              promptMetadata: toPromptMetadata(generated.prompt_metadata),
               model: generated.model,
               answer: generated.answer
             })
@@ -182,8 +223,7 @@ const worker = new Worker<RunJobPayload>(
           const review = await reviewAnswer({
             material: generated.material,
             question: generated.question,
-            rubric: job.rubric,
-            rubricSchema: toLegacyRubricSchema(job.rubricSchema),
+            rubricSchema,
             answer: generated.answer,
             passingScore: job.passingScore
           });
@@ -198,10 +238,17 @@ const worker = new Worker<RunJobPayload>(
             totalScore: review.total_score,
             passed: review.passed,
             dimensions: review.dimensions.map((dimension) => ({
+              dimensionId: dimension.dimension_id,
               name: dimension.name,
               score: dimension.score,
               maxScore: dimension.max_score
             })),
+            failedCriteria: review.failed_criteria.map((criterion) => ({
+              criterionId: criterion.criterion_id,
+              reason: criterion.reason,
+              repairInstruction: criterion.repair_instruction
+            })),
+            preservedCriteriaIds: review.preserved_criteria_ids,
             reasons: review.reasons,
             reviewerModel: review.reviewer_model
           });
@@ -220,7 +267,7 @@ const worker = new Worker<RunJobPayload>(
             continue;
           }
 
-          feedbackByItem.set(generated.itemId, review.reasons);
+          feedbackByItem.set(generated.itemId, toRetryFeedback(review));
           await db
             .update(answerGenerationItems)
             .set({
@@ -285,6 +332,16 @@ async function runSingleItem(
     return;
   }
 
+  const rubricSchema = await verifyClaimedRubricSchema(
+    job.rubricSchema,
+    compilationId,
+    (failure) =>
+      failClaimedJobForInvalidSchema(job.id, compilationId, failure)
+  );
+  if (!rubricSchema) {
+    return;
+  }
+
   const [item] = await db
     .select()
     .from(answerGenerationItems)
@@ -296,7 +353,7 @@ async function runSingleItem(
 
   await clearItemAttempts(item.id);
 
-  let feedback: string[] = [];
+  let feedback: RetryFeedback | null = null;
   for (let attemptNumber = 1; attemptNumber <= job.maxAttempts; attemptNumber += 1) {
     if (await isCancelled(job.id)) {
       await markItemPending(item.id);
@@ -311,11 +368,11 @@ async function runSingleItem(
       generated = await generateAnswer({
         material: item.material,
         question: item.question,
-        rubric: job.rubric,
-        compiledPrompt: job.compiledPrompt,
-        rubricSchema: toLegacyRubricSchema(job.rubricSchema),
+        rubricSchema,
         answerMinutes: Number(job.answerMinutes),
+        targetMinWords: item.targetMinWords,
         targetWords: item.targetWords,
+        targetMaxWords: item.targetMaxWords,
         previousFeedback: feedback
       });
 
@@ -326,6 +383,7 @@ async function runSingleItem(
           attemptNumber,
           status: "generated",
           promptVersion: generated.prompt_version,
+          promptMetadata: toPromptMetadata(generated.prompt_metadata),
           model: generated.model,
           answer: generated.answer
         })
@@ -355,8 +413,7 @@ async function runSingleItem(
       const review = await reviewAnswer({
         material: item.material,
         question: item.question,
-        rubric: job.rubric,
-        rubricSchema: toLegacyRubricSchema(job.rubricSchema),
+        rubricSchema,
         answer: generated.answer,
         passingScore: job.passingScore
       });
@@ -368,10 +425,17 @@ async function runSingleItem(
         totalScore: review.total_score,
         passed: review.passed,
         dimensions: review.dimensions.map((dimension) => ({
+          dimensionId: dimension.dimension_id,
           name: dimension.name,
           score: dimension.score,
           maxScore: dimension.max_score
         })),
+        failedCriteria: review.failed_criteria.map((criterion) => ({
+          criterionId: criterion.criterion_id,
+          reason: criterion.reason,
+          repairInstruction: criterion.repair_instruction
+        })),
+        preservedCriteriaIds: review.preserved_criteria_ids,
         reasons: review.reasons,
         reviewerModel: review.reviewer_model
       });
@@ -391,7 +455,7 @@ async function runSingleItem(
         return;
       }
 
-      feedback = review.reasons;
+      feedback = toRetryFeedback(review);
       await db
         .update(answerGenerationItems)
         .set({
@@ -438,29 +502,13 @@ async function writeWorkerHeartbeat() {
   await client.set(workerHeartbeatKey, String(Date.now()), { EX: 15 });
 }
 
-async function generateAnswer(input: {
-  material: string | null;
-  question: string;
-  rubric: string;
-  compiledPrompt: string | null;
-  rubricSchema: RubricSchemaV1 | null;
-  answerMinutes: number;
-  targetWords: number;
-  previousFeedback: string[];
-}) {
+async function generateAnswer(
+  input: Parameters<typeof buildGeneratePayload>[0]
+) {
   const response = await fetch(`${aiServiceUrl}/ai/generate-answer`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      material: input.material,
-      question: input.question,
-      rubric: input.rubric,
-      compiled_prompt: input.compiledPrompt,
-      rubric_schema: input.rubricSchema ? toApiRubricSchema(input.rubricSchema) : null,
-      answer_minutes: input.answerMinutes,
-      target_words: input.targetWords,
-      previous_feedback: input.previousFeedback
-    })
+    body: JSON.stringify(buildGeneratePayload(input))
   });
 
   if (!response.ok) {
@@ -470,25 +518,13 @@ async function generateAnswer(input: {
   return (await response.json()) as GenerateAnswerResponse;
 }
 
-async function reviewAnswer(input: {
-  material: string | null;
-  question: string;
-  rubric: string;
-  rubricSchema: RubricSchemaV1 | null;
-  answer: string;
-  passingScore: number;
-}) {
+async function reviewAnswer(
+  input: Parameters<typeof buildReviewPayload>[0]
+) {
   const response = await fetch(`${aiServiceUrl}/ai/review-answer`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      material: input.material,
-      question: input.question,
-      rubric: input.rubric,
-      rubric_schema: input.rubricSchema ? toApiRubricSchema(input.rubricSchema) : null,
-      answer: input.answer,
-      passing_score: input.passingScore
-    })
+    body: JSON.stringify(buildReviewPayload(input))
   });
 
   if (!response.ok) {
@@ -498,32 +534,44 @@ async function reviewAnswer(input: {
   return (await response.json()) as ReviewAnswerResponse;
 }
 
-function toApiRubricSchema(schema: RubricSchemaV1) {
+function toPromptMetadata(
+  metadata: GenerateAnswerResponse["prompt_metadata"]
+): PromptMetadata {
   return {
-    role_prompt: schema.rolePrompt,
-    answer_principles: schema.answerPrinciples,
-    dimensions: schema.dimensions.map((dimension) => ({
-      name: dimension.name,
-      max_score: dimension.maxScore,
-      criteria: dimension.criteria,
-      pitfalls: dimension.pitfalls
-    })),
-    retry_policy: schema.retryPolicy,
-    output_rules: schema.outputRules
+    pipelineVersion: metadata.pipeline_version,
+    schemaVersion: metadata.schema_version,
+    basePromptVersion: metadata.base_prompt_version,
+    rubricPromptVersion: metadata.rubric_prompt_version,
+    retryPromptVersion: metadata.retry_prompt_version,
+    loadedSections: metadata.loaded_sections
   };
-}
-
-function toLegacyRubricSchema(
-  schema: PersistedRubricSchema | null
-): RubricSchemaV1 | null {
-  if (!schema || "version" in schema) {
-    return null;
-  }
-  return schema;
 }
 
 function compilationTokenMatches(compilationId: string) {
   return sql`${answerGenerationJobs.rubricCompilation}->'details'->>'compilationId' = ${compilationId}`;
+}
+
+async function failClaimedJobForInvalidSchema(
+  jobId: string,
+  compilationId: string,
+  failure: ClaimedSchemaFailure
+) {
+  const now = new Date();
+  await db
+    .update(answerGenerationJobs)
+    .set({
+      status: "failed",
+      rubricCompilation: { ...failure, updatedAt: now.toISOString() },
+      completedAt: now,
+      updatedAt: now
+    })
+    .where(
+      and(
+        eq(answerGenerationJobs.id, jobId),
+        eq(answerGenerationJobs.status, "running"),
+        compilationTokenMatches(compilationId)
+      )
+    );
 }
 
 async function getJob(jobId: string) {

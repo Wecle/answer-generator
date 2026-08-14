@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 from app.models import (
     GenerateAnswerRequest,
+    RetryFeedback,
     ReviewAnswerRequest,
     RunAttempt,
     RunItemRequest,
@@ -11,7 +14,7 @@ from app.services.reviewer import review_answer
 
 async def run_item(request: RunItemRequest) -> RunItemResponse:
     attempts: list[RunAttempt] = []
-    feedback: list[str] = []
+    feedback: RetryFeedback | None = request.previous_feedback
     final_answer = ""
     final_score = 0
     reasons: list[str] = []
@@ -21,11 +24,11 @@ async def run_item(request: RunItemRequest) -> RunItemResponse:
             GenerateAnswerRequest(
                 material=request.material,
                 question=request.question,
-                rubric=request.rubric,
-                compiled_prompt=request.compiled_prompt,
                 rubric_schema=request.rubric_schema,
                 answer_minutes=request.answer_minutes,
+                target_min_words=request.target_min_words,
                 target_words=request.target_words,
+                target_max_words=request.target_max_words,
                 previous_feedback=feedback,
             )
         )
@@ -33,7 +36,6 @@ async def run_item(request: RunItemRequest) -> RunItemResponse:
             ReviewAnswerRequest(
                 material=request.material,
                 question=request.question,
-                rubric=request.rubric,
                 rubric_schema=request.rubric_schema,
                 answer=generated.answer,
                 passing_score=request.passing_score,
@@ -54,7 +56,11 @@ async def run_item(request: RunItemRequest) -> RunItemResponse:
                 reasons=reasons,
             )
 
-        feedback = review.reasons
+        feedback = RetryFeedback(
+            failed_criteria=review.failed_criteria,
+            preserved_criteria_ids=review.preserved_criteria_ids,
+            reasons=review.reasons,
+        )
 
     return RunItemResponse(
         status="needs_review",

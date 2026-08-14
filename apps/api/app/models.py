@@ -174,14 +174,7 @@ class ReviewAnswerResponse(BaseModel):
     reviewer_model: str
 
 
-class RunItemRequest(BaseModel):
-    material: Optional[str] = None
-    question: str
-    rubric: str
-    compiled_prompt: Optional[str] = None
-    rubric_schema: Optional[RubricSchemaV2] = None
-    answer_minutes: float = Field(gt=0)
-    target_words: int = Field(gt=0)
+class RunItemRequest(GenerateAnswerRequest):
     passing_score: int = Field(default=95, ge=0, le=100)
     max_attempts: int = Field(default=3, ge=1, le=10)
 
