@@ -19,6 +19,10 @@ import {
   verifyClaimedRubricSchema,
   type ClaimedSchemaFailure
 } from "./claimed-schema";
+import {
+  toPersistedScoringDetails,
+  type ReviewAnswerScoringDetails
+} from "./review-persistence";
 
 loadProjectEnv();
 
@@ -58,6 +62,7 @@ interface ReviewAnswerResponse {
   }>;
   preserved_criteria_ids: string[];
   reasons: string[];
+  scoring_details: ReviewAnswerScoringDetails;
   reviewer_model: string;
 }
 
@@ -250,6 +255,7 @@ const worker = new Worker<RunJobPayload>(
             })),
             preservedCriteriaIds: review.preserved_criteria_ids,
             reasons: review.reasons,
+            scoringDetails: toPersistedScoringDetails(review.scoring_details),
             reviewerModel: review.reviewer_model
           });
 
@@ -437,6 +443,7 @@ async function runSingleItem(
         })),
         preservedCriteriaIds: review.preserved_criteria_ids,
         reasons: review.reasons,
+        scoringDetails: toPersistedScoringDetails(review.scoring_details),
         reviewerModel: review.reviewer_model
       });
 

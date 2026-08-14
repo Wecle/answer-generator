@@ -1,0 +1,1 @@
+ALTER TABLE "answer_generation_reviews" ADD COLUMN "scoring_details" jsonb;

@@ -148,6 +148,23 @@ export interface PersistedReviewDimension {
   maxScore: number;
 }
 
+export interface PersistedScoringDetails {
+  baseScore: number;
+  awardedBonuses: Array<{
+    bonusRuleId: string;
+    score: number;
+    reason: string;
+  }>;
+  triggeredPenalties: Array<{
+    penaltyRuleId: string;
+    reason: string;
+  }>;
+  rawScore: number;
+  normalizedScore: number;
+  finalScore: number;
+  vetoed: boolean;
+}
+
 export interface LegacyPersistedReviewDimension {
   name: string;
   score: number;

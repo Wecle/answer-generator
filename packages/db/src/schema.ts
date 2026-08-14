@@ -13,6 +13,7 @@ import type {
   FailedCriterion,
   PersistedReviewDimensionRecord,
   PersistedRubricSchema,
+  PersistedScoringDetails,
   PromptMetadata,
   RubricCompilationState
 } from "@answer-generator/shared";
@@ -118,6 +119,7 @@ export const answerGenerationReviews = pgTable("answer_generation_reviews", {
   failedCriteria: jsonb("failed_criteria").notNull().default([]).$type<FailedCriterion[]>(),
   preservedCriteriaIds: jsonb("preserved_criteria_ids").notNull().default([]).$type<string[]>(),
   reasons: jsonb("reasons").notNull().$type<string[]>(),
+  scoringDetails: jsonb("scoring_details").$type<PersistedScoringDetails>(),
   reviewerModel: text("reviewer_model").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
 });

@@ -1,5 +1,6 @@
 import type {
   GenerationJobStatus,
+  PersistedScoringDetails,
   RubricCompilationState
 } from "@answer-generator/shared";
 
@@ -18,6 +19,7 @@ export interface QuestionItem {
       passed: boolean;
       reasons: string[];
       dimensions: Array<{ name: string; score: number; maxScore: number }>;
+      scoringDetails?: PersistedScoringDetails | null;
     } | null;
   }>;
 }

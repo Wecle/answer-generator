@@ -50,6 +50,13 @@
       "when": 1786530541152,
       "tag": "0006_add_rubric_pipeline_metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1786705423129,
+      "tag": "0007_strong_loners",
+      "breakpoints": true
     }
   ]
 }
