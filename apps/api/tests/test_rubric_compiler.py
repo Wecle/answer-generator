@@ -17,6 +17,7 @@ from tests.rubric_fixtures import valid_candidate_data, valid_schema_data
 def stable_model_environment(monkeypatch):
     monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    monkeypatch.delenv("RUBRIC_COMPILER_MODEL", raising=False)
 
 
 def make_request() -> CompileRubricRequest:
@@ -417,6 +418,44 @@ async def test_compile_pipeline_attaches_server_owned_metadata(monkeypatch):
     assert result.rubric_schema.compilation.compiler_model == "deepseek-v4-pro"
     assert result.rubric_schema.compilation.auditor_model == "deepseek-v4-pro"
     assert result.rubric_schema.compilation.coverage_passed is True
+
+
+@pytest.mark.asyncio
+async def test_compile_pipeline_prefers_rubric_compiler_model(monkeypatch):
+    monkeypatch.setenv("OPENAI_MODEL", "deepseek-v4-flash")
+    monkeypatch.setenv("RUBRIC_COMPILER_MODEL", "deepseek-v4-pro")
+    calls = install_fake_completions(
+        monkeypatch,
+        [
+            json.dumps(valid_candidate_data(), ensure_ascii=False),
+            json.dumps(audit_result(), ensure_ascii=False),
+        ],
+    )
+
+    result = await _compile_with_openai(make_request(), "test-key")
+
+    assert [call["model"] for call in calls] == [
+        "deepseek-v4-pro",
+        "deepseek-v4-pro",
+    ]
+    assert result.compiler_model == "deepseek-v4-pro"
+    assert result.auditor_model == "deepseek-v4-pro"
+    assert result.rubric_schema.compilation.compiler_model == "deepseek-v4-pro"
+    assert result.rubric_schema.compilation.auditor_model == "deepseek-v4-pro"
+
+
+def test_rubric_compiler_model_falls_back_to_openai_model(monkeypatch):
+    monkeypatch.delenv("RUBRIC_COMPILER_MODEL", raising=False)
+    monkeypatch.setenv("OPENAI_MODEL", "deepseek-v4-flash")
+
+    assert rubric_compiler._rubric_compiler_model() == "deepseek-v4-flash"
+
+
+def test_rubric_compiler_model_ignores_blank_values(monkeypatch):
+    monkeypatch.setenv("RUBRIC_COMPILER_MODEL", "   ")
+    monkeypatch.setenv("OPENAI_MODEL", "   ")
+
+    assert rubric_compiler._rubric_compiler_model() == "gpt-4o-mini"
 
 
 @pytest.mark.asyncio

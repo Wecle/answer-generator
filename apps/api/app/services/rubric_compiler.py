@@ -21,6 +21,17 @@ from app.services.structured_output import post_structured_completion
 
 
 DEFAULT_OPENAI_TIMEOUT_SECONDS = 180
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+
+
+def _rubric_compiler_model() -> str:
+    compiler_model = os.getenv("RUBRIC_COMPILER_MODEL", "").strip()
+    if compiler_model:
+        return compiler_model
+
+    shared_model = os.getenv("OPENAI_MODEL", "").strip()
+    return shared_model or DEFAULT_OPENAI_MODEL
+
 
 RUBRIC_CANDIDATE_EXAMPLE = {
     "version": "v2",
@@ -93,7 +104,7 @@ async def _compile_with_openai(
     request: CompileRubricRequest, api_key: str
 ) -> CompileRubricResponse:
     base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    model = _rubric_compiler_model()
 
     async with httpx.AsyncClient(timeout=_openai_timeout_seconds()) as client:
         candidate_data = await _run_compile_stage(
