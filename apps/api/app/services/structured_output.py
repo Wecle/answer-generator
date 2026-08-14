@@ -16,6 +16,9 @@ STRICT_UNSUPPORTED_MARKERS = (
     "strict is not supported",
     "unsupported json schema",
     "invalid function schema",
+    "invalid schema",
+    "schema does not conform",
+    "unsupported keyword",
     "beta feature",
 )
 
@@ -43,7 +46,8 @@ def strict_json_schema(model_type: Type[BaseModel]) -> dict[str, Any]:
         normalized = {
             key: normalize(value)
             for key, value in node.items()
-            if key not in {"$defs", "default", "minItems", "maxItems"}
+            if key
+            not in {"$defs", "default", "title", "minItems", "maxItems"}
         }
         if "const" in normalized:
             normalized["enum"] = [normalized.pop("const")]

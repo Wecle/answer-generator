@@ -21,6 +21,7 @@ def assert_strict_objects(node: object) -> None:
         assert "$ref" not in node
         assert "$defs" not in node
         assert "const" not in node
+        assert "title" not in node
         assert "minItems" not in node
         assert "maxItems" not in node
         for value in node.values():
@@ -183,6 +184,43 @@ async def test_strict_capability_rejection_falls_back_once_to_json_output():
 
     assert len(client.calls) == 2
     assert client.calls[1][0] == "https://api.deepseek.com/chat/completions"
+    assert result == candidate
+
+
+@pytest.mark.asyncio
+async def test_strict_schema_rejection_falls_back_once_to_json_output():
+    candidate = valid_candidate_data()
+    client = FakeClient(
+        [
+            FakeResponse(
+                {
+                    "error": {
+                        "message": (
+                            "Invalid schema for function: unsupported keyword title"
+                        )
+                    }
+                },
+                status_code=400,
+            ),
+            FakeResponse(
+                {"choices": [{"message": {"content": json.dumps(candidate)}}]}
+            ),
+        ]
+    )
+
+    result = await post_structured_completion(
+        client=client,
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-pro",
+        api_key="test-key",
+        prompt="return JSON",
+        system_prompt="compile rubric",
+        output_model=RubricSchemaCandidate,
+        function_name="submit_rubric_schema",
+        function_description="Submit the complete rubric schema candidate.",
+    )
+
+    assert len(client.calls) == 2
     assert result == candidate
 
 

@@ -104,6 +104,27 @@ async def test_compile_rubric_requires_ai_configuration(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_compile_stage_preserves_http_error_response_body():
+    request = httpx.Request("POST", "https://api.deepseek.com/beta/chat/completions")
+    response = httpx.Response(
+        400,
+        request=request,
+        json={"error": {"message": "Invalid schema: unsupported keyword title"}},
+    )
+
+    async def fail():
+        raise httpx.HTTPStatusError(
+            "400 Bad Request", request=request, response=response
+        )
+
+    with pytest.raises(RubricCompilationError) as error:
+        await rubric_compiler._run_compile_stage("compiling_schema", fail())
+
+    assert error.value.details["status_code"] == 400
+    assert "unsupported keyword title" in error.value.details["response_body"]
+
+
+@pytest.mark.asyncio
 async def test_compile_pipeline_compiles_and_audits_without_repair(monkeypatch):
     responses = [
         json.dumps(valid_schema_data(), ensure_ascii=False),

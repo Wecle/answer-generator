@@ -356,11 +356,15 @@ async def _run_compile_stage(stage: str, operation):
             {"error": str(error)},
         ) from error
     except httpx.HTTPError as error:
+        details = {"error": str(error)}
+        if isinstance(error, httpx.HTTPStatusError):
+            details["status_code"] = error.response.status_code
+            details["response_body"] = error.response.text[:4000]
         raise RubricCompilationError(
             stage,
             "AI_SERVICE_ERROR",
             "评分标准分析模型调用失败",
-            {"error": str(error)},
+            details,
         ) from error
     except (json.JSONDecodeError, ValidationError, KeyError, IndexError, TypeError) as error:
         raise RubricCompilationError(
