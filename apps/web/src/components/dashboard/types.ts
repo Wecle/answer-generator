@@ -1,3 +1,8 @@
+import type {
+  GenerationJobStatus,
+  RubricCompilationState
+} from "@answer-generator/shared";
+
 export interface QuestionItem {
   id: string;
   title: string;
@@ -66,6 +71,13 @@ export interface JobProgressView {
   total: number;
 }
 
+export interface CompilationErrorView {
+  title: string;
+  message: string;
+  meta: string;
+  technicalDetails: string | null;
+}
+
 export interface AnswerSection {
   title: string;
   body: string;
@@ -105,7 +117,8 @@ export interface JobDetailPayload {
     answerMinutes: string;
     passingScore: number;
     maxAttempts: number;
-    status: import("@answer-generator/shared").GenerationJobStatus;
+    status: GenerationJobStatus;
+    rubricCompilation: RubricCompilationState | null;
     startedAt: string | null;
     completedAt: string | null;
   };

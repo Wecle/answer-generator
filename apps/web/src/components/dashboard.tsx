@@ -18,6 +18,7 @@ import {
   stopJobRequest,
   updateJobSettingsRequest
 } from "./dashboard/api";
+import { CompilationError } from "./dashboard/compilation-error";
 import { DeleteJobConfirmModal, DocumentParseModal, QuestionModal, SettingsApplyModal, TaskSettingsModal } from "./dashboard/modals";
 import {
   CurrentQuestionPanel,
@@ -31,6 +32,7 @@ import {
 import {
   emptyQuestionForm,
   emptyTaskForm,
+  type CompilationErrorView,
   type DocumentParseMode,
   type ItemFormState,
   type JobSummary,
@@ -42,6 +44,7 @@ import {
   type TaskFormState
 } from "./dashboard/types";
 import {
+  compilationErrorView,
   formatBlock,
   formatBlocks,
   formatElapsed,
@@ -82,6 +85,8 @@ export function Dashboard() {
   const [activeJobStatus, setActiveJobStatus] = useState<GenerationJobStatus>("draft");
   const [result, setResult] = useState<RunResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [rubricCompilationError, setRubricCompilationError] =
+    useState<CompilationErrorView | null>(null);
   const [taskFormErrors, setTaskFormErrors] = useState<TaskFormErrors>({});
   const compilingRubricRequests = useRef<Set<string>>(new Set());
 
@@ -504,6 +509,9 @@ export function Dashboard() {
 
     setActiveJobId(payload.job.id);
     setActiveJobStatus(payload.job.status);
+    setRubricCompilationError(
+      compilationErrorView(payload.job.rubricCompilation)
+    );
     setTitle(payload.job.title);
     setRubric(payload.job.rubric);
     setAnswerMinutes(Number(payload.job.answerMinutes));
@@ -631,6 +639,7 @@ export function Dashboard() {
     setSelectedId("");
     setItemForms({});
     setResult(null);
+    setRubricCompilationError(null);
     setDeleteJobConfirmOpen(false);
     await loadJobs();
   }
@@ -716,6 +725,9 @@ export function Dashboard() {
           />
         ) : null}
 
+        {rubricCompilationError ? (
+          <CompilationError error={rubricCompilationError} />
+        ) : null}
         {error ? <div className="error">{error}</div> : null}
 
         {!activeJobId ? (

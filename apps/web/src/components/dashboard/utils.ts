@@ -1,5 +1,27 @@
 import { z } from "zod";
-import type { QuestionItem, TaskFormErrors, TaskFormState } from "./types";
+import type { RubricCompilationState } from "@answer-generator/shared";
+import type {
+  CompilationErrorView,
+  QuestionItem,
+  TaskFormErrors,
+  TaskFormState
+} from "./types";
+
+export function compilationErrorView(
+  state: RubricCompilationState | null | undefined
+): CompilationErrorView | null {
+  if (!state?.code || !state.message) {
+    return null;
+  }
+
+  return {
+    title: "评分标准分析失败",
+    message: state.message,
+    meta: `${state.stage} · ${state.code}`,
+    technicalDetails:
+      typeof state.details?.error === "string" ? state.details.error : null
+  };
+}
 
 export function latestReviewReasons(item: QuestionItem) {
   const reasons = item.attempts?.at(-1)?.review?.reasons ?? [];
