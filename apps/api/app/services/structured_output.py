@@ -126,10 +126,10 @@ async def _post_strict(
                     },
                 }
             ],
-            "tool_choice": {
-                "type": "function",
-                "function": {"name": function_name},
-            },
+            # Thinking mode rejects named tool choices. Because this request
+            # registers exactly one function, "required" still deterministically
+            # selects the intended function while working in both modes.
+            "tool_choice": "required",
         },
     )
     if response.status_code in {400, 404, 422} and any(

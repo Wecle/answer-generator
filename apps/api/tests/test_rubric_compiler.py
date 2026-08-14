@@ -56,7 +56,7 @@ def install_fake_completions(monkeypatch, responses: list[str]) -> list[dict]:
             calls.append(json)
             content = self.responses.pop(0)
             if "tools" in json:
-                function_name = json["tool_choice"]["function"]["name"]
+                function_name = json["tools"][0]["function"]["name"]
                 return FakeResponse(
                     {
                         "choices": [

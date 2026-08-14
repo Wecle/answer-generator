@@ -81,7 +81,7 @@ class FakeClient:
 
 
 @pytest.mark.asyncio
-async def test_deepseek_uses_forced_strict_function_call():
+async def test_deepseek_uses_required_strict_function_call():
     candidate = valid_candidate_data()
     client = FakeClient(
         [
@@ -122,7 +122,9 @@ async def test_deepseek_uses_forced_strict_function_call():
     url, payload = client.calls[0]
     assert url == "https://api.deepseek.com/beta/chat/completions"
     assert payload["tools"][0]["function"]["strict"] is True
-    assert payload["tool_choice"]["function"]["name"] == "submit_rubric_schema"
+    assert payload["tool_choice"] == "required"
+    assert len(payload["tools"]) == 1
+    assert payload["tools"][0]["function"]["name"] == "submit_rubric_schema"
     assert result == candidate
 
 
