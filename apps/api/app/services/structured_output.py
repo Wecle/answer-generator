@@ -110,6 +110,7 @@ async def _post_strict(
         headers={"Authorization": f"Bearer {api_key}"},
         json={
             "model": model,
+            "thinking": {"type": "disabled"},
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
@@ -126,10 +127,10 @@ async def _post_strict(
                     },
                 }
             ],
-            # Thinking mode rejects named tool choices. Because this request
-            # registers exactly one function, "required" still deterministically
-            # selects the intended function while working in both modes.
-            "tool_choice": "required",
+            "tool_choice": {
+                "type": "function",
+                "function": {"name": function_name},
+            },
         },
     )
     if response.status_code in {400, 404, 422} and any(
