@@ -174,6 +174,13 @@ test("rejects invalid normalized score invariants", () => {
   const missingPenaltyField = normalizedSchemaData();
   delete missingPenaltyField.scoringPolicy.penaltyRules[0].maxScore;
 
+  const deductWithoutScore = normalizedSchemaData();
+  deductWithoutScore.scoringPolicy.penaltyRules[0].effect = "deduct";
+
+  const capWithoutMaxScore = normalizedSchemaData();
+  capWithoutMaxScore.scoringPolicy.penaltyRules[0].effect = "cap";
+  delete capWithoutMaxScore.scoringPolicy.penaltyRules[0].maxScore;
+
   const unknownSource = normalizedSchemaData();
   unknownSource.scoringPolicy.bonusRules[0].sourceRequirementIds = ["REQ-999"];
 
@@ -195,6 +202,8 @@ test("rejects invalid normalized score invariants", () => {
     incorrectRawMax,
     invalidBonusRange,
     missingPenaltyField,
+    deductWithoutScore,
+    capWithoutMaxScore,
     unknownSource,
     duplicateRuleId,
     oneSidedConflict,

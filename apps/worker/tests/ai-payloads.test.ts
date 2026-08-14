@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { RubricSchemaV2 } from "@answer-generator/shared";
 import {
   buildGeneratePayload,
   buildReviewPayload,
@@ -128,6 +129,113 @@ test("generation and review payloads preserve normalized scoring policy", () => 
     reviewPayload.rubric_schema.scoring_policy,
     expectedScoringPolicy
   );
+});
+
+test("worker preserves every penalty effect and its numeric fields", () => {
+  const rubricSchema: RubricSchemaV2 = {
+    ...normalizedSchemaFixture,
+    sourceRequirements: [
+      ...normalizedSchemaFixture.sourceRequirements,
+      { id: "REQ-007", text: "明确扣分", kind: "score" },
+      { id: "REQ-008", text: "分数封顶", kind: "score" },
+      { id: "REQ-009", text: "一票否决", kind: "score" }
+    ],
+    scoringPolicy: {
+      ...normalizedSchemaFixture.scoringPolicy!,
+      penaltyRules: [
+        {
+          id: "PEN-DEDUCT",
+          text: "明确扣7分",
+          effect: "deduct",
+          score: 7,
+          sourceRequirementIds: ["REQ-007"]
+        },
+        {
+          id: "PEN-CAP",
+          text: "最高80分",
+          effect: "cap",
+          maxScore: 80,
+          sourceRequirementIds: ["REQ-008"]
+        },
+        {
+          id: "PEN-RANGE",
+          text: "掉到60-70分",
+          effect: "set_range",
+          minScore: 60,
+          maxScore: 70,
+          sourceRequirementIds: ["REQ-005"]
+        },
+        {
+          id: "PEN-VETO",
+          text: "一票否决",
+          effect: "veto",
+          sourceRequirementIds: ["REQ-009"]
+        },
+        {
+          id: "PEN-QUALITATIVE",
+          text: "超时印象分大扣",
+          effect: "qualitative",
+          sourceRequirementIds: ["REQ-006"]
+        }
+      ]
+    }
+  };
+
+  const payload = buildReviewPayload({
+    material: null,
+    question: "问题",
+    rubricSchema,
+    answer: "答案",
+    passingScore: 95
+  });
+
+  assert.deepEqual(payload.rubric_schema.scoring_policy?.penalty_rules, [
+    {
+      id: "PEN-DEDUCT",
+      text: "明确扣7分",
+      effect: "deduct",
+      score: 7,
+      min_score: null,
+      max_score: null,
+      source_requirement_ids: ["REQ-007"]
+    },
+    {
+      id: "PEN-CAP",
+      text: "最高80分",
+      effect: "cap",
+      score: null,
+      min_score: null,
+      max_score: 80,
+      source_requirement_ids: ["REQ-008"]
+    },
+    {
+      id: "PEN-RANGE",
+      text: "掉到60-70分",
+      effect: "set_range",
+      score: null,
+      min_score: 60,
+      max_score: 70,
+      source_requirement_ids: ["REQ-005"]
+    },
+    {
+      id: "PEN-VETO",
+      text: "一票否决",
+      effect: "veto",
+      score: null,
+      min_score: null,
+      max_score: null,
+      source_requirement_ids: ["REQ-009"]
+    },
+    {
+      id: "PEN-QUALITATIVE",
+      text: "超时印象分大扣",
+      effect: "qualitative",
+      score: null,
+      min_score: null,
+      max_score: null,
+      source_requirement_ids: ["REQ-006"]
+    }
+  ]);
 });
 
 test("review feedback becomes the next generation repair payload", () => {
