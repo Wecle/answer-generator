@@ -22,6 +22,8 @@ from app.services.structured_output import post_structured_completion
 
 DEFAULT_OPENAI_TIMEOUT_SECONDS = 180
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+MAX_SCHEMA_VALIDATION_REPAIRS = 3
+MAX_COVERAGE_AUDIT_REPAIRS = 2
 
 
 def _rubric_compiler_model() -> str:
@@ -184,30 +186,10 @@ async def _compile_with_openai(
 
         schema = build_rubric_schema(candidate, model)
 
-        try:
-            validate_rubric_schema(schema)
-        except RubricSchemaValidationError as error:
-            if repair_used:
-                raise RubricCompilationError(
-                    "validating_schema",
-                    error.code,
-                    "评分标准结构修复后仍未通过确定性校验",
-                    error.details,
-                ) from error
-            schema = await _run_compile_stage(
-                "repairing_schema",
-                _repair_candidate(
-                    client,
-                    base_url,
-                    model,
-                    api_key,
-                    request,
-                    schema,
-                    {"code": error.code, "details": error.details},
-                ),
-            )
-            repair_used = True
-            _validate_repaired_schema(schema)
+        schema, validation_repair_used = await _repair_until_valid(
+            client, base_url, model, api_key, request, schema
+        )
+        repair_used = repair_used or validation_repair_used
 
         audit_stage = (
             "auditing_repaired_schema" if repair_used else "auditing_coverage"
@@ -216,11 +198,13 @@ async def _compile_with_openai(
             audit_stage,
             _audit_candidate(client, base_url, model, api_key, request, schema),
         )
+        audit = _normalize_affirmative_audit(audit)
         _validate_audit_result(audit_stage, audit)
-        if not audit.passed:
-            if repair_used:
+        audit_repairs = 0
+        while not audit.passed:
+            if audit_repairs >= MAX_COVERAGE_AUDIT_REPAIRS:
                 raise _coverage_failure("auditing_repaired_schema", audit)
-
+            audit_repairs += 1
             schema = await _run_compile_stage(
                 "repairing_schema",
                 _repair_candidate(
@@ -234,16 +218,17 @@ async def _compile_with_openai(
                 ),
             )
             repair_used = True
-            _validate_repaired_schema(schema)
+            schema, _ = await _repair_until_valid(
+                client, base_url, model, api_key, request, schema
+            )
             audit = await _run_compile_stage(
                 "auditing_repaired_schema",
                 _audit_candidate(
                     client, base_url, model, api_key, request, schema
                 ),
             )
+            audit = _normalize_affirmative_audit(audit)
             _validate_audit_result("auditing_repaired_schema", audit)
-            if not audit.passed:
-                raise _coverage_failure("auditing_repaired_schema", audit)
 
     schema.compilation.compiler_model = model
     schema.compilation.auditor_model = model
@@ -317,7 +302,19 @@ async def _repair_candidate(
         function_name="submit_rubric_schema",
         function_description="提交修复后的完整评分标准候选结构。",
     )
-    candidate = RubricSchemaCandidate.model_validate(data)
+    try:
+        candidate = RubricSchemaCandidate.model_validate(data)
+    except ValidationError as error:
+        candidate = await _repair_invalid_candidate(
+            client,
+            base_url,
+            model,
+            api_key,
+            request,
+            data,
+            error,
+            repair_report=errors,
+        )
     return build_rubric_schema(candidate, model)
 
 
@@ -329,6 +326,7 @@ async def _repair_invalid_candidate(
     request: CompileRubricRequest,
     candidate_data: dict[str, Any],
     error: ValidationError,
+    repair_report: Optional[dict] = None,
 ) -> RubricSchemaCandidate:
     repaired_data = await post_structured_completion(
         client=client,
@@ -336,7 +334,10 @@ async def _repair_invalid_candidate(
         model=model,
         api_key=api_key,
         prompt=_build_structure_repair_prompt(
-            request, candidate_data, error.errors(include_url=False)
+            request,
+            candidate_data,
+            error.errors(include_url=False),
+            repair_report,
         ),
         system_prompt="你是评分标准 Schema 结构修复器，只修复报告指出的问题。",
         output_model=RubricSchemaCandidate,
@@ -390,7 +391,16 @@ def _build_audit_prompt(
         "完整映射到同一条 score_conflicts 时，应视为已忠实保存，不得仅因冲突存在判定失败。\n"
         "逐项检查固定维度、bonus_rules 和 penalty_rules 是否分别映射原文，区间端点是否忠实，"
         "不得接受把区间加分合并成固定维度，也不得接受把扣分、掉档、封顶、否决或定性规则只藏在 pitfall 文本中。"
-        "检查 normalization 是否能由 base_max_score 与 bonus_rules 的上限确定性计算。\n"
+        "检查 normalization 是否能由 base_max_score 与 bonus_rules 的上限确定性计算。"
+        "当档位标题上限与逐项加分上限冲突时，raw_max_score 应采用可逐项计算的 base_max_score 加"
+        "bonus_rules.max_score 之和；只要冲突双方及区间端点已在 score_conflicts 中完整映射，就必须"
+        "视为忠实保存，不得要求模型擅自选择标题上限、删除归一化或否定逐项加分可叠加。"
+        "基础层的“保底”描述与明确的低分掉档规则并存时，应保留掉档规则；若两者已记录为冲突，"
+        "不得仅因掉档低于基础满分而判定失败。target_max_score=100 是系统统一输出分制的固定契约，"
+        "不是从原文提取出的业务分值；不得以原文未声明100分为由判定新增语义或要求删除归一化。"
+        "normalized_rules 只会用于原文存在明确分值的情况，其 inferred_scores 必须为 false。\n"
+        "score_issues 只能填写仍需修复的实际问题；已正确、符合原则或应视为忠实保存的观察不得写入"
+        "score_issues。若没有实际问题，必须返回 passed=true 且所有问题与修复列表为空。\n"
         "确定性校验摘要：候选 Schema 的 ID、引用、映射以及固定100分或 normalized_rules 分值校验已通过。\n\n"
         f"原始评分标准：\n{request.rubric}\n\n"
         f"提取出的原子要求：\n{json.dumps([item.model_dump() for item in schema.source_requirements], ensure_ascii=False)}\n\n"
@@ -404,7 +414,15 @@ def _build_repair_prompt(
     return (
         "只修复校验或审计报告指出的问题，保留其余已验证内容。输出完整候选 JSON。\n"
         "不得新增修复报告未要求的业务规则；不要返回 compilation。必须保留 scoring_policy，"
-        "不得将 normalized_rules 改回固定100分，也不得合并区间加分或弱化 penalty_rules。\n\n"
+        "不得将 normalized_rules 改回固定100分，也不得合并区间加分或弱化 penalty_rules。"
+        "当错误是 INVALID_BASE_SCORE_TOTAL 时，dimensions.max_score 之和必须修正为 "
+        "scoring_policy.base_max_score；raw_max_score 必须等于 base_max_score 加所有 "
+        "bonus_rules.max_score。只保留原文基础层明确计分的维度；不得为了降低总分把多余维度设为0，"
+        "非基础计分章节应删除其独立维度并将来源要求忠实重映射到 criterion、global constraint、"
+        "bonus rule 或 penalty rule。当错误是 UNMAPPED_REQUIREMENT 时，必须逐个保留报告中的来源要求，"
+        "并根据原文语义映射到合适的现有或新增 criterion、pitfall、global constraint、bonus rule、"
+        "penalty rule 或 score conflict；不得通过删除 source_requirements 规避映射。返回前必须计算"
+        "所有 source_requirements.id 与全部 source_requirement_ids 的差集，并确认差集为空。\n\n"
         f"原始评分标准：\n{request.rubric}\n\n"
         f"候选 Schema：\n{schema.model_dump_json()}\n\n"
         f"修复报告：\n{json.dumps(errors, ensure_ascii=False)}"
@@ -415,11 +433,21 @@ def _build_structure_repair_prompt(
     request: CompileRubricRequest,
     candidate_data: dict[str, Any],
     errors: list[dict[str, Any]],
+    repair_report: Optional[dict] = None,
 ) -> str:
+    repair_context = ""
+    if repair_report is not None:
+        repair_context = (
+            "本候选来自上一轮定向修复，还必须同时满足上一轮修复报告；不得只修字段形状而重新引入"
+            "原问题。不得用 max_score=0 保留多余维度；应按原始评分标准删除非基础计分维度并忠实"
+            "重映射其来源要求。\n"
+            f"上一轮修复报告：\n{json.dumps(repair_report, ensure_ascii=False)}\n\n"
+        )
     return (
         "只修复结构校验报告指出的问题，输出完整候选 JSON，不要返回 compilation。"
         "必须保留 scoring_policy，不得将 normalized_rules 改回固定100分，"
         "也不得合并区间加分或弱化 penalty_rules。\n"
+        f"{repair_context}"
         f"原始评分标准：\n{request.rubric}\n\n"
         f"无效候选 JSON：\n{json.dumps(candidate_data, ensure_ascii=False)}\n\n"
         f"Pydantic 结构错误：\n{json.dumps(errors, ensure_ascii=False)}\n\n"
@@ -461,16 +489,90 @@ async def _run_compile_stage(stage: str, operation):
         ) from error
 
 
-def _validate_repaired_schema(schema: RubricSchemaV2) -> None:
-    try:
-        validate_rubric_schema(schema)
-    except RubricSchemaValidationError as error:
-        raise RubricCompilationError(
-            "validating_schema",
-            error.code,
-            "修复后的评分标准仍未通过确定性校验",
-            error.details,
-        ) from error
+async def _repair_until_valid(
+    client: httpx.AsyncClient,
+    base_url: str,
+    model: str,
+    api_key: str,
+    request: CompileRubricRequest,
+    schema: RubricSchemaV2,
+) -> tuple[RubricSchemaV2, bool]:
+    repair_used = False
+    validation_repairs = 0
+    while True:
+        try:
+            validate_rubric_schema(schema)
+            return schema, repair_used
+        except RubricSchemaValidationError as error:
+            if error.code == "UNMAPPED_REQUIREMENT":
+                schema = _map_unmapped_requirements_to_global_constraints(
+                    schema, error.details["ids"]
+                )
+                repair_used = True
+                continue
+            if validation_repairs >= MAX_SCHEMA_VALIDATION_REPAIRS:
+                raise RubricCompilationError(
+                    "validating_schema",
+                    error.code,
+                    "评分标准经多轮定向修复后仍未通过确定性校验",
+                    error.details,
+                ) from error
+            validation_repairs += 1
+            schema = await _run_compile_stage(
+                "repairing_schema",
+                _repair_candidate(
+                    client,
+                    base_url,
+                    model,
+                    api_key,
+                    request,
+                    schema,
+                    {"code": error.code, "details": error.details},
+                ),
+            )
+            repair_used = True
+
+
+def _map_unmapped_requirements_to_global_constraints(
+    schema: RubricSchemaV2, requirement_ids: list[str]
+) -> RubricSchemaV2:
+    """Preserve unmapped source text without inventing scores or deleting requirements."""
+    data = schema.model_dump()
+    requirements_by_id = {
+        item["id"]: item for item in data["source_requirements"]
+    }
+    used_ids = {
+        item.id for item in schema.source_requirements
+    } | {
+        item.id for item in schema.global_constraints
+    } | {
+        dimension.id for dimension in schema.dimensions
+    } | {
+        item.id
+        for dimension in schema.dimensions
+        for item in [*dimension.criteria, *dimension.pitfalls]
+    }
+    if schema.scoring_policy is not None:
+        used_ids.update(item.id for item in schema.scoring_policy.bonus_rules)
+        used_ids.update(item.id for item in schema.scoring_policy.penalty_rules)
+
+    for requirement_id in requirement_ids:
+        requirement = requirements_by_id[requirement_id]
+        constraint_id = f"GLO-AUTO-{requirement_id}"
+        suffix = 2
+        while constraint_id in used_ids:
+            constraint_id = f"GLO-AUTO-{requirement_id}-{suffix}"
+            suffix += 1
+        used_ids.add(constraint_id)
+        data["global_constraints"].append(
+            {
+                "id": constraint_id,
+                "text": requirement["text"],
+                "source_requirement_ids": [requirement_id],
+            }
+        )
+
+    return RubricSchemaV2.model_validate(data)
 
 
 def _coverage_failure(
@@ -499,6 +601,47 @@ def _validate_audit_result(stage: str, audit: CoverageAuditResult) -> None:
             "覆盖审计结论与问题明细相互矛盾",
             audit.model_dump(),
         )
+
+
+def _normalize_affirmative_audit(
+    audit: CoverageAuditResult,
+) -> CoverageAuditResult:
+    if (
+        audit.passed
+        or not audit.score_issues
+        or audit.missing_requirement_ids
+        or audit.unsupported_schema_paths
+        or audit.conflicts
+        or audit.repair_instructions
+    ):
+        return audit
+
+    affirmative_markers = ("正确", "符合", "应视为忠实保存", "已完整记录")
+    negative_markers = (
+        "不正确",
+        "未正确",
+        "不符合",
+        "无法",
+        "遗漏",
+        "缺失",
+        "错误",
+        "无依据",
+        "语义弱化",
+        "仍需",
+    )
+    conclusively_affirmative = all(
+        "无需修复" in issue
+        and any(marker in issue for marker in affirmative_markers)
+        for issue in audit.score_issues
+    )
+    cautiously_affirmative = all(
+        any(marker in issue for marker in affirmative_markers)
+        and not any(marker in issue for marker in negative_markers)
+        for issue in audit.score_issues
+    )
+    if conclusively_affirmative or cautiously_affirmative:
+        return audit.model_copy(update={"passed": True, "score_issues": []})
+    return audit
 
 
 def _openai_timeout_seconds() -> int:

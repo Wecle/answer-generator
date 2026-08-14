@@ -215,6 +215,51 @@ async def test_compile_pipeline_accepts_normalized_policy_without_repair(
 
 
 @pytest.mark.asyncio
+async def test_compile_pipeline_normalizes_affirmative_audit_issues(monkeypatch):
+    affirmative_audit = audit_result(False)
+    affirmative_audit["missing_requirement_ids"] = []
+    affirmative_audit["score_issues"] = [
+        "raw_max_score 计算错误的疑虑经复核不成立，此点正确，无需修复。",
+        "target_max_score=100 符合系统固定契约，无需修复。",
+    ]
+    affirmative_audit["repair_instructions"] = []
+    calls = install_fake_completions(
+        monkeypatch,
+        [
+            json.dumps(normalized_candidate_data(), ensure_ascii=False),
+            json.dumps(affirmative_audit, ensure_ascii=False),
+        ],
+    )
+
+    result = await _compile_with_openai(make_request(), "test-key")
+
+    assert result.rubric_schema.compilation.coverage_passed is True
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_invalid_audit_repair_converges_before_reaudit(monkeypatch):
+    invalid_audit_repair = normalized_candidate_data()
+    invalid_audit_repair["scoring_policy"]["normalization"]["raw_max_score"] = 97
+    calls = install_fake_completions(
+        monkeypatch,
+        [
+            json.dumps(normalized_candidate_data(), ensure_ascii=False),
+            json.dumps(audit_result(False), ensure_ascii=False),
+            json.dumps(invalid_audit_repair, ensure_ascii=False),
+            json.dumps(normalized_candidate_data(), ensure_ascii=False),
+            json.dumps(audit_result(), ensure_ascii=False),
+        ],
+    )
+
+    result = await _compile_with_openai(make_request(), "test-key")
+
+    assert result.rubric_schema.compilation.coverage_passed is True
+    assert len(calls) == 5
+    assert "INVALID_RAW_MAX_SCORE" in calls[3]["messages"][1]["content"]
+
+
+@pytest.mark.asyncio
 async def test_reported_complex_rubric_compiles_and_audits_without_repair(
     monkeypatch,
 ):
@@ -305,10 +350,12 @@ async def test_compile_pipeline_repairs_once_after_failed_audit(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_compile_pipeline_fails_after_single_repair(monkeypatch):
+async def test_compile_pipeline_fails_after_two_audit_repairs(monkeypatch):
     calls = install_fake_completions(
         monkeypatch,
         [
+            json.dumps(valid_schema_data(), ensure_ascii=False),
+            json.dumps(audit_result(False), ensure_ascii=False),
             json.dumps(valid_schema_data(), ensure_ascii=False),
             json.dumps(audit_result(False), ensure_ascii=False),
             json.dumps(valid_schema_data(), ensure_ascii=False),
@@ -321,11 +368,11 @@ async def test_compile_pipeline_fails_after_single_repair(monkeypatch):
 
     assert error.value.stage == "auditing_repaired_schema"
     assert error.value.code == "COVERAGE_AUDIT_FAILED"
-    assert len(calls) == 4
+    assert len(calls) == 6
 
 
 @pytest.mark.asyncio
-async def test_compile_pipeline_does_not_repair_again_after_validation_repair(
+async def test_compile_pipeline_allows_audit_repair_after_validation_repair(
     monkeypatch,
 ):
     invalid = valid_schema_data()
@@ -336,6 +383,10 @@ async def test_compile_pipeline_does_not_repair_again_after_validation_repair(
             json.dumps(invalid, ensure_ascii=False),
             json.dumps(valid_schema_data(), ensure_ascii=False),
             json.dumps(audit_result(False), ensure_ascii=False),
+            json.dumps(valid_schema_data(), ensure_ascii=False),
+            json.dumps(audit_result(False), ensure_ascii=False),
+            json.dumps(valid_schema_data(), ensure_ascii=False),
+            json.dumps(audit_result(False), ensure_ascii=False),
         ],
     )
 
@@ -344,7 +395,7 @@ async def test_compile_pipeline_does_not_repair_again_after_validation_repair(
 
     assert error.value.stage == "auditing_repaired_schema"
     assert error.value.code == "COVERAGE_AUDIT_FAILED"
-    assert len(calls) == 3
+    assert len(calls) == 7
 
 
 @pytest.mark.asyncio
@@ -582,7 +633,121 @@ async def test_invalid_candidate_shape_is_repaired_once(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_structure_repair_consumes_the_only_repair_budget(monkeypatch):
+async def test_structure_repair_can_be_followed_by_score_total_repair(monkeypatch):
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/v1")
+    invalid_shape = normalized_candidate_data()
+    invalid_shape["retry_policy"] = {"max_retries": 2}
+    invalid_total = normalized_candidate_data()
+    invalid_total["dimensions"][1]["max_score"] = 38
+    calls = install_fake_completions(
+        monkeypatch,
+        [
+            json.dumps(invalid_shape, ensure_ascii=False),
+            json.dumps(invalid_total, ensure_ascii=False),
+            json.dumps(normalized_candidate_data(), ensure_ascii=False),
+            json.dumps(audit_result(), ensure_ascii=False),
+        ],
+    )
+
+    result = await _compile_with_openai(make_request(), "test-key")
+
+    policy = result.rubric_schema.scoring_policy
+    assert policy is not None
+    assert sum(item.max_score for item in result.rubric_schema.dimensions) == 75
+    assert len(calls) == 4
+    assert "INVALID_BASE_SCORE_TOTAL" in calls[2]["messages"][1]["content"]
+    assert '"total": 78' in calls[2]["messages"][1]["content"]
+    assert '"expected": 75' in calls[2]["messages"][1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_invalid_score_total_repair_shape_is_repaired_with_context(monkeypatch):
+    invalid_total = normalized_candidate_data()
+    invalid_total["dimensions"][1]["max_score"] = 38
+    invalid_repair = normalized_candidate_data()
+    invalid_repair["dimensions"].extend(
+        [
+            {
+                "id": "DIM-006",
+                "name": "材料运用",
+                "max_score": 0,
+                "source_requirement_ids": [],
+                "criteria": [
+                    {
+                        "id": "CRI-006",
+                        "text": "材料引用、转化与推导",
+                        "source_requirement_ids": ["REQ-001"],
+                    }
+                ],
+                "pitfalls": [],
+            },
+            {
+                "id": "DIM-007",
+                "name": "语言质感",
+                "max_score": 0,
+                "source_requirement_ids": [],
+                "criteria": [
+                    {
+                        "id": "CRI-007",
+                        "text": "语言庄重、有画面、有金句",
+                        "source_requirement_ids": ["REQ-002"],
+                    }
+                ],
+                "pitfalls": [],
+            },
+        ]
+    )
+    calls = install_fake_completions(
+        monkeypatch,
+        [
+            json.dumps(invalid_total, ensure_ascii=False),
+            json.dumps(invalid_repair, ensure_ascii=False),
+            json.dumps(normalized_candidate_data(), ensure_ascii=False),
+            json.dumps(audit_result(), ensure_ascii=False),
+        ],
+    )
+
+    result = await _compile_with_openai(make_request(), "test-key")
+
+    assert result.rubric_schema.compilation.coverage_passed is True
+    assert len(calls) == 4
+    recovery_prompt = calls[2]["messages"][1]["content"]
+    assert "INVALID_BASE_SCORE_TOTAL" in recovery_prompt
+    assert '"total": 78' in recovery_prompt
+    assert '"loc": ["dimensions", 2, "max_score"]' in recovery_prompt
+    assert "不得用 max_score=0 保留多余维度" in recovery_prompt
+
+
+@pytest.mark.asyncio
+async def test_unmapped_requirements_are_preserved_as_global_constraints(monkeypatch):
+    invalid_total = normalized_candidate_data()
+    invalid_total["dimensions"][1]["max_score"] = 38
+    unmapped = normalized_candidate_data()
+    unmapped["source_requirements"].append(
+        {"id": "REQ-007", "text": "材料信息要转化运用", "kind": "criterion"}
+    )
+    calls = install_fake_completions(
+        monkeypatch,
+        [
+            json.dumps(invalid_total, ensure_ascii=False),
+            json.dumps(unmapped, ensure_ascii=False),
+            json.dumps(audit_result(), ensure_ascii=False),
+        ],
+    )
+
+    result = await _compile_with_openai(make_request(), "test-key")
+
+    assert result.rubric_schema.compilation.coverage_passed is True
+    assert len(calls) == 3
+    assert "INVALID_BASE_SCORE_TOTAL" in calls[1]["messages"][1]["content"]
+    constraint = result.rubric_schema.global_constraints[-1]
+    assert constraint.id == "GLO-AUTO-REQ-007"
+    assert constraint.text == "材料信息要转化运用"
+    assert constraint.source_requirement_ids == ["REQ-007"]
+
+
+@pytest.mark.asyncio
+async def test_structure_repair_allows_a_separate_audit_repair(monkeypatch):
     monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/v1")
     invalid = valid_candidate_data()
     invalid["retry_policy"] = {"max_retries": 2}
@@ -592,6 +757,10 @@ async def test_structure_repair_consumes_the_only_repair_budget(monkeypatch):
             json.dumps(invalid, ensure_ascii=False),
             json.dumps(valid_candidate_data(), ensure_ascii=False),
             json.dumps(audit_result(False), ensure_ascii=False),
+            json.dumps(valid_candidate_data(), ensure_ascii=False),
+            json.dumps(audit_result(False), ensure_ascii=False),
+            json.dumps(valid_candidate_data(), ensure_ascii=False),
+            json.dumps(audit_result(False), ensure_ascii=False),
         ],
     )
 
@@ -599,4 +768,4 @@ async def test_structure_repair_consumes_the_only_repair_budget(monkeypatch):
         await _compile_with_openai(make_request(), "test-key")
 
     assert error.value.code == "COVERAGE_AUDIT_FAILED"
-    assert len(calls) == 3
+    assert len(calls) == 7

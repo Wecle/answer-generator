@@ -1,6 +1,6 @@
 import { answerGenerationJobs, createDb } from "@answer-generator/db";
 import { and, eq, notInArray, sql } from "drizzle-orm";
-import { isRubricCompiling } from "@/lib/job-status";
+import { statusAfterSuccessfulRubricCompilation } from "@/lib/job-status";
 import {
   compileRubricForJob,
   RubricCompilationRequestError
@@ -91,9 +91,7 @@ export async function POST(_: Request, context: { params: Promise<{ id: string }
         ...compiled.compilation,
         details: { compilationId }
       },
-      status: isRubricCompiling(compilationJob.status)
-        ? "draft"
-        : compilationJob.status,
+      status: statusAfterSuccessfulRubricCompilation(compilationJob.status),
       updatedAt: new Date()
     })
     .where(compilationTokenMatches(compilationJob.id, compilationId))

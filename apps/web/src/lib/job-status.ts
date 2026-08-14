@@ -6,6 +6,12 @@ export function isRubricCompiling(status: string | null | undefined) {
   return status === RUBRIC_COMPILING_STATUS;
 }
 
+export function statusAfterSuccessfulRubricCompilation<T extends string>(
+  status: T
+): T | "draft" {
+  return isRubricCompiling(status) || status === "failed" ? "draft" : status;
+}
+
 export function isTerminalJobStatus(status: string | null | undefined) {
   return status ? terminalJobStatuses.has(status) : false;
 }

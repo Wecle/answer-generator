@@ -199,6 +199,8 @@ def build_rubric_schema(
 ) -> RubricSchemaV2:
     candidate_data = candidate.model_dump()
     inferred_scores = candidate_data.pop("inferred_scores")
+    if candidate.scoring_policy is not None:
+        inferred_scores = False
     return RubricSchemaV2.model_validate(
         {
             **candidate_data,

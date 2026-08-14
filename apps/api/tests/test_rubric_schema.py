@@ -48,6 +48,16 @@ def test_server_preserves_normalized_policy_while_owning_compilation_metadata():
     assert schema.compilation.coverage_passed is False
 
 
+def test_normalized_policy_never_marks_explicit_scores_as_inferred():
+    candidate_data = normalized_candidate_data()
+    candidate_data["inferred_scores"] = True
+    candidate = RubricSchemaCandidate.model_validate(candidate_data)
+
+    schema = build_rubric_schema(candidate, "deepseek-v4-pro")
+
+    assert schema.compilation.inferred_scores is False
+
+
 def test_candidate_rejects_penalty_missing_required_effect_fields():
     data = normalized_candidate_data()
     data["scoring_policy"]["penalty_rules"][0].pop("max_score")
