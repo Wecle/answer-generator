@@ -20,6 +20,9 @@ def assert_strict_objects(node: object) -> None:
             assert set(node.get("required", [])) == set(properties)
         assert "$ref" not in node
         assert "$defs" not in node
+        assert "const" not in node
+        assert "minItems" not in node
+        assert "maxItems" not in node
         for value in node.values():
             assert_strict_objects(value)
     elif isinstance(node, list):
@@ -44,6 +47,7 @@ def test_strict_schema_inlines_refs_and_requires_every_property():
 
     assert_strict_objects(schema)
     assert "inferred_scores" in schema["required"]
+    assert schema["properties"]["version"]["enum"] == ["v2"]
 
 
 class FakeResponse:

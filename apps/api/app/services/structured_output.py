@@ -43,8 +43,10 @@ def strict_json_schema(model_type: Type[BaseModel]) -> dict[str, Any]:
         normalized = {
             key: normalize(value)
             for key, value in node.items()
-            if key not in {"$defs", "default"}
+            if key not in {"$defs", "default", "minItems", "maxItems"}
         }
+        if "const" in normalized:
+            normalized["enum"] = [normalized.pop("const")]
         if normalized.get("type") == "object":
             properties = normalized.get("properties", {})
             normalized["required"] = list(properties)

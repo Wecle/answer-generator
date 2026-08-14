@@ -10,7 +10,13 @@ from app.services.rubric_compiler import (
     compile_rubric,
 )
 import app.services.rubric_compiler as rubric_compiler
-from tests.rubric_fixtures import valid_schema_data
+from tests.rubric_fixtures import valid_candidate_data, valid_schema_data
+
+
+@pytest.fixture(autouse=True)
+def stable_model_environment(monkeypatch):
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
 
 
 def make_request() -> CompileRubricRequest:
@@ -25,18 +31,20 @@ def install_fake_completions(monkeypatch, responses: list[str]) -> list[dict]:
     calls: list[dict] = []
 
     class FakeResponse:
-        def __init__(self, content: str):
-            self.content = content
+        def __init__(self, payload: dict):
+            self.payload = payload
+            self.status_code = 200
+            self.text = json.dumps(payload, ensure_ascii=False)
 
         def raise_for_status(self):
             return None
 
         def json(self):
-            return {"choices": [{"message": {"content": self.content}}]}
+            return self.payload
 
     class FakeAsyncClient:
         def __init__(self, *args, **kwargs):
-            self.responses = [FakeResponse(content) for content in responses]
+            self.responses = list(responses)
 
         async def __aenter__(self):
             return self
@@ -46,7 +54,31 @@ def install_fake_completions(monkeypatch, responses: list[str]) -> list[dict]:
 
         async def post(self, url, headers, json):
             calls.append(json)
-            return self.responses.pop(0)
+            content = self.responses.pop(0)
+            if "tools" in json:
+                function_name = json["tool_choice"]["function"]["name"]
+                return FakeResponse(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": None,
+                                    "tool_calls": [
+                                        {
+                                            "function": {
+                                                "name": function_name,
+                                                "arguments": content,
+                                            }
+                                        }
+                                    ],
+                                }
+                            }
+                        ]
+                    }
+                )
+            return FakeResponse(
+                {"choices": [{"message": {"content": content}}]}
+            )
 
     monkeypatch.setattr(rubric_compiler.httpx, "AsyncClient", FakeAsyncClient)
     return calls
@@ -345,3 +377,66 @@ async def test_compile_with_openai_uses_configured_timeout(monkeypatch):
     await _compile_with_openai(make_request(), "test-key")
 
     assert captured_timeout == 180
+
+
+@pytest.mark.asyncio
+async def test_compile_pipeline_attaches_server_owned_metadata(monkeypatch):
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.deepseek.com")
+    monkeypatch.setenv("OPENAI_MODEL", "deepseek-v4-pro")
+    install_fake_completions(
+        monkeypatch,
+        [
+            json.dumps(valid_candidate_data(), ensure_ascii=False),
+            json.dumps(audit_result(), ensure_ascii=False),
+        ],
+    )
+
+    result = await _compile_with_openai(make_request(), "test-key")
+
+    assert result.rubric_schema.compilation.compiler_model == "deepseek-v4-pro"
+    assert result.rubric_schema.compilation.auditor_model == "deepseek-v4-pro"
+    assert result.rubric_schema.compilation.coverage_passed is True
+
+
+@pytest.mark.asyncio
+async def test_invalid_candidate_shape_is_repaired_once(monkeypatch):
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/v1")
+    invalid = valid_candidate_data()
+    invalid["answer_principles"] = {"general": ["围绕题目作答"]}
+    calls = install_fake_completions(
+        monkeypatch,
+        [
+            json.dumps(invalid, ensure_ascii=False),
+            json.dumps(valid_candidate_data(), ensure_ascii=False),
+            json.dumps(audit_result(), ensure_ascii=False),
+        ],
+    )
+
+    result = await _compile_with_openai(make_request(), "test-key")
+
+    assert result.rubric_schema.compilation.coverage_passed is True
+    assert len(calls) == 3
+    repair_prompt = calls[1]["messages"][1]["content"]
+    assert "answer_principles" in repair_prompt
+    assert "Input should be a valid list" in repair_prompt
+
+
+@pytest.mark.asyncio
+async def test_structure_repair_consumes_the_only_repair_budget(monkeypatch):
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/v1")
+    invalid = valid_candidate_data()
+    invalid["retry_policy"] = {"max_retries": 2}
+    calls = install_fake_completions(
+        monkeypatch,
+        [
+            json.dumps(invalid, ensure_ascii=False),
+            json.dumps(valid_candidate_data(), ensure_ascii=False),
+            json.dumps(audit_result(False), ensure_ascii=False),
+        ],
+    )
+
+    with pytest.raises(RubricCompilationError) as error:
+        await _compile_with_openai(make_request(), "test-key")
+
+    assert error.value.code == "COVERAGE_AUDIT_FAILED"
+    assert len(calls) == 3
