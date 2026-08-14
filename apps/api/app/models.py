@@ -311,6 +311,27 @@ class ReviewDimension(BaseModel):
     max_score: int
 
 
+class AwardedBonus(BaseModel):
+    bonus_rule_id: str
+    score: int = Field(ge=0)
+    reason: str
+
+
+class TriggeredPenalty(BaseModel):
+    penalty_rule_id: str
+    reason: str
+
+
+class ReviewScoringDetails(BaseModel):
+    base_score: int
+    awarded_bonuses: List[AwardedBonus] = Field(default_factory=list)
+    triggered_penalties: List[TriggeredPenalty] = Field(default_factory=list)
+    raw_score: int
+    normalized_score: int = Field(ge=0, le=100)
+    final_score: int = Field(ge=0, le=100)
+    vetoed: bool = False
+
+
 class ReviewAnswerResponse(BaseModel):
     total_score: int
     passed: bool
