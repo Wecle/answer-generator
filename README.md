@@ -84,6 +84,7 @@ AI_SERVICE_URL=http://localhost:8001
 OPENAI_API_KEY=
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-4o-mini
+RUBRIC_COMPILER_MODEL=
 OPENAI_TIMEOUT_SECONDS=180
 ```
 
@@ -97,6 +98,7 @@ Production deployment reads `.env.production`, normally written by GitHub Action
 | `OPENAI_API_KEY` | Required for compilation and generation | OpenAI-compatible API key; answer review alone can use a deterministic local fallback |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible base URL |
 | `OPENAI_MODEL` | `gpt-4o-mini` | Model used by the AI service |
+| `RUBRIC_COMPILER_MODEL` | Falls back to `OPENAI_MODEL` | Optional model used only for rubric compilation, repair, and coverage audit |
 | `OPENAI_TIMEOUT_SECONDS` | `180` | Timeout for AI service model calls |
 | `WORKER_CONCURRENCY` | `1` | Number of concurrent worker jobs |
 | `WEB_BIND_HOST` | `0.0.0.0` | Host binding for production web service |

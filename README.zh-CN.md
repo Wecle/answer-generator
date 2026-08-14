@@ -85,6 +85,7 @@ AI_SERVICE_URL=http://localhost:8001
 OPENAI_API_KEY=
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-4o-mini
+RUBRIC_COMPILER_MODEL=
 OPENAI_TIMEOUT_SECONDS=180
 ```
 
@@ -98,6 +99,7 @@ OPENAI_TIMEOUT_SECONDS=180
 | `OPENAI_API_KEY` | 评分标准编译和答案生成必填 | OpenAI 兼容接口密钥；只有答案审核可使用确定性本地兜底 |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI 兼容接口地址 |
 | `OPENAI_MODEL` | `gpt-4o-mini` | AI 服务使用的模型 |
+| `RUBRIC_COMPILER_MODEL` | 回退到 `OPENAI_MODEL` | 可选；仅用于评分标准编译、修复和覆盖审计的模型 |
 | `OPENAI_TIMEOUT_SECONDS` | `180` | AI 服务调用模型的超时时间，单位秒 |
 | `WORKER_CONCURRENCY` | `1` | Worker 并发任务数 |
 | `WEB_BIND_HOST` | `0.0.0.0` | 生产 Web 服务绑定地址 |
