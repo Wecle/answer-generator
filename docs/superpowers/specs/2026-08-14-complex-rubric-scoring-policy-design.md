@@ -19,7 +19,7 @@
 - 允许记录原文自身的数值冲突，不要求模型擅自消解冲突。
 - 由服务端计算归一化分数，模型不能直接决定最终总分。
 - 保持历史 Rubric Schema v2 和历史任务行为不变。
-- 继续使用现有 JSON 存储，不增加数据库迁移。
+- 使用独立 JSONB 字段持久化结构化计分明细，使刷新后仍可解释最终得分。
 
 ## 非目标
 
@@ -193,7 +193,7 @@ AI 审核响应只负责返回事实性分项：
 
 `qualitative` 只进入审核原因，不改变最终分数。
 
-评分响应和持久化记录新增：
+评分响应和持久化记录新增 `scoring_details`：
 
 - 基础维度合计；
 - 每项实际加分；
@@ -203,6 +203,8 @@ AI 审核响应只负责返回事实性分项：
 - 最终分数；
 - 是否被 veto。
 
+数据库的 `answer_generation_reviews` 表新增可空 JSONB 列 `scoring_details`。历史记录保持 `null`；新评分记录写入完整结构化明细。该列使用可空迁移，部署时不需要回填或重算历史答案。
+
 ## 本地审核兜底
 
 没有 AI 审核结果时，本地审核器继续按 criterion 命中率计算基础维度分。它不会猜测主观加分，因此所有 bonus 得 0；只应用可以确定性检测的规则。无法可靠判断的 penalty 和 qualitative rule 进入说明，不擅自扣分。
@@ -211,7 +213,8 @@ AI 审核响应只负责返回事实性分项：
 
 ## 兼容与数据流
 
-- `scoring_policy` 是 v2 的可选字段，历史 JSON 不需要迁移。
+- `scoring_policy` 是 v2 的可选字段，历史 Rubric JSON 不需要迁移。
+- 数据库增加 `answer_generation_reviews.scoring_details` 可空 JSONB 列；历史审核记录无需回填。
 - Shared TypeScript 类型与运行时校验器接受两种模式。
 - Worker 在 API 载荷中保留 scoring policy 和新增的评分分项。
 - 现有固定 100 分任务的生成、审核、重试和持久化行为保持不变。
