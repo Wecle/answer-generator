@@ -11,15 +11,16 @@ It is designed as an independent service that can run next to CiviMind on the sa
 - Create answer-generation tasks with a rubric, answer duration, passing score, and retry limit.
 - Add questions manually or import `.docx` files.
 - Choose ordinary Word parsing or AI-assisted parsing for irregular documents.
-- Compile task rubrics into generation guidance before questions can be processed.
+- Compile raw task rubrics into Rubric Schema v2, then run deterministic validation and an independent coverage audit before generation can start.
 - Generate one answer per question, then automatically review each answer.
-- Retry failed answers with review feedback until they pass or reach the configured limit.
+- Generate from the verified schema only, without injecting the raw rubric a second time.
+- Retry failed answers with only the missing criteria and repair feedback until they pass or reach the configured limit.
 - Track live progress, current question, elapsed time, scores, retry feedback, and final status.
 - Export generated answers and review results.
 - Deploy through GitHub Actions with GHCR images and a self-hosted runner.
 
 > [!NOTE]
-> If `OPENAI_API_KEY` is empty, the FastAPI service falls back to deterministic local behavior. This is useful for setup checks and UI testing, while production-quality output requires a configured OpenAI-compatible model service.
+> Rubric compilation and answer generation require `OPENAI_API_KEY`. Only answer review has a deterministic local fallback when no model key is configured.
 
 ## Architecture
 
@@ -93,7 +94,7 @@ Production deployment reads `.env.production`, normally written by GitHub Action
 | `DATABASE_URL` | Required | Postgres connection string |
 | `REDIS_URL` | `redis://redis:6379` | Redis connection string |
 | `AI_SERVICE_URL` | `http://api:8001` | Internal FastAPI service URL |
-| `OPENAI_API_KEY` | Empty | OpenAI-compatible API key |
+| `OPENAI_API_KEY` | Required for compilation and generation | OpenAI-compatible API key; answer review alone can use a deterministic local fallback |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible base URL |
 | `OPENAI_MODEL` | `gpt-4o-mini` | Model used by the AI service |
 | `OPENAI_TIMEOUT_SECONDS` | `180` | Timeout for AI service model calls |
@@ -130,12 +131,12 @@ Both modes return a normalized list of question items. Materials are optional, a
 ## Task Lifecycle
 
 1. Create a task and enter rubric settings.
-2. The system compiles the rubric into task guidance.
+2. The system compiles the raw rubric into Rubric Schema v2, performs deterministic validation, and runs an independent coverage audit.
 3. Add questions manually or import a Word file.
-4. Start the task manually.
-5. The worker generates answers for each question.
-6. The worker reviews generated answers against the task rubric.
-7. Low-scoring answers are retried with feedback until they pass or reach the retry limit.
+4. Start the task manually after the structured rubric passes its audit. Historical tasks that still use the old rubric format must reanalyze their rubric before they can generate again.
+5. The worker generates answers using only the verified schema; it does not inject the raw rubric again.
+6. The worker reviews generated answers against the verified schema.
+7. Low-scoring answers are retried with only the missing criteria and structured repair feedback until they pass or reach the retry limit.
 8. The task finishes as completed or leaves failed items for manual handling.
 
 ## Production Deployment

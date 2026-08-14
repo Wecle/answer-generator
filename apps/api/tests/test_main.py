@@ -3,6 +3,7 @@ import httpx
 
 import app.main as main
 from app.services.rubric_compiler import RubricCompilationError
+from tests.rubric_fixtures import valid_schema_data
 
 
 def test_compile_endpoint_returns_structured_failure(monkeypatch):
@@ -29,6 +30,31 @@ def test_compile_endpoint_returns_structured_failure(monkeypatch):
         "message": "评分标准覆盖审计失败",
         "details": {"missing_requirement_ids": ["REQ-004"]},
     }
+
+
+def test_compile_endpoint_returns_verified_v2_schema(monkeypatch):
+    async def succeed(_request):
+        schema = valid_schema_data()
+        schema["compilation"]["auditor_model"] = "test-auditor"
+        schema["compilation"]["coverage_passed"] = True
+        return {
+            "rubric_schema": schema,
+            "compiler_model": "test-compiler",
+            "auditor_model": "test-auditor",
+        }
+
+    monkeypatch.setattr(main, "compile_rubric", succeed)
+    client = TestClient(main.app)
+
+    response = client.post(
+        "/ai/compile-rubric",
+        json={"rubric": "评分标准", "answer_minutes": 2, "passing_score": 95},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["rubric_schema"]["version"] == "v2"
+    assert body["rubric_schema"]["compilation"]["coverage_passed"] is True
 
 
 def test_compile_rubric_endpoint_returns_bad_gateway_for_invalid_ai_schema(monkeypatch):
